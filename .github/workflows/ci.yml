@@ -10,6 +10,8 @@ jobs:
   check:
     name: typecheck · test · build
     runs-on: ubuntu-latest
+    env:
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
     steps:
       - uses: actions/checkout@v4
 
@@ -26,6 +28,16 @@ jobs:
 
       - name: Tests
         run: npm test
+
+      - name: Coverage
+        run: npm run coverage
+
+      - name: Upload coverage to Codecov
+        if: env.CODECOV_TOKEN != ''
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage/coverage-final.json
 
       - name: Build
         run: npm run build
