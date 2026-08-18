@@ -1,0 +1,48 @@
+# DeepSeek Harness cordis.yml example for dsh-github-reviewer.
+# Mount the plugin (installed as @lingobridge/dsh-github-reviewer) and
+# configure one account per entry under accounts.
+
+plugins:
+  github-reviewer:
+    config:
+      accounts:
+        reviewer:
+          # Required GitHub App identity. The App needs:
+          #   - Pull requests: read/write (reviews and comments)
+          #   - Contents: read (on the base repository, for
+          #     .github/review_instructions.md and file inspection)
+          appId: '123456'
+          installationId: '987654'
+          privateKeyPath: '/etc/dsh/github-app.pem'
+          # Optional. Defaults shown below.
+          baseUrl: 'https://api.github.com'
+          webUrl: 'https://github.com'
+          pollIntervalMs: 120000
+          repositories:
+            - 'owner/repo'
+          # Harness LLM route used for this account's reviews.
+          provider: 'deepseek'
+          model: 'deepseek-chat'
+          review:
+            maxToolCalls: 30
+            toolTimeoutMs: 30000
+            toolResultLimit: 60000
+            timeoutMs: 900000
+            # Optional fallback used only when the base repository has no
+            # .github/review_instructions.md at the PR base.
+            defaultInstructions: |
+              Review this pull request for correctness, regressions, security issues,
+              and missing tests. Leave concise inline comments where useful.
+          # Required per-review GitHub MCP server. The plugin injects
+          # GITHUB_PERSONAL_ACCESS_TOKEN and GITHUB_HOST at runtime; do not
+          # put GitHub tokens here.
+          mcp:
+            command: 'github-mcp-server'
+            args:
+              - 'stdio'
+              - '--tools=pull_request_read,get_file_contents,pull_request_review_write,add_comment_to_pending_review'
+            env: {}
+            cwd: ''
+          # Optional cursor state file; defaults to
+          # ./.dsh-github-reviewer/<account>.json next to the process.
+          statePath: ''
