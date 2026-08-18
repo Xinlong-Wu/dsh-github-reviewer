@@ -79,6 +79,8 @@ export class AccountPoller {
   private readonly abortController = new AbortController()
   private running = false
   private timer: ReturnType<typeof setInterval> | undefined
+  /** Draft PRs already logged as skipped, so the line is emitted once per unchanged PR. */
+  private readonly skippedDrafts = new Set<string>()
 
   /**
    * @param deps - runtime dependencies.
@@ -141,7 +143,11 @@ export class AccountPoller {
       for (const pr of prs) {
         if (signal.aborted) return
         if (pr.draft) {
-          this.logger.debug(`skipping draft github pr repo=${fullName(pr.base.repo)} number=${pr.number} head=${shortSHA(pr.head.sha)}`)
+          const skipKey = `${fullName(pr.base.repo)}#${pr.number}@${shortSHA(pr.head.sha)}:draft`
+          if (!this.skippedDrafts.has(skipKey)) {
+            this.logger.debug(`skipping draft github pr repo=${fullName(pr.base.repo)} number=${pr.number} head=${shortSHA(pr.head.sha)}`)
+            this.skippedDrafts.add(skipKey)
+          }
           continue
         }
         // Phase 1: new commits trigger a review.
