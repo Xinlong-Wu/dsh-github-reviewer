@@ -9,9 +9,16 @@
 import { CallToolResultSchema } from '@modelcontextprotocol/sdk/types.js'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
-import type { GuardedToolResult } from './guard.ts'
 import { GITHUB_MCP_TOOL_PREFIX } from './guard.ts'
-import type { RawMcpTool } from './guard.ts'
+
+/** One MCP tool as discovered from the server, before guarding. */
+export interface RawMcpTool {
+  /** Model-facing name with the `mcp_github_` prefix applied. */
+  name: string
+  description: string
+  /** JSON Schema for the arguments. */
+  inputSchema: Record<string, unknown>
+}
 
 /** Spawn parameters for the per-review GitHub MCP server. */
 export interface McpServerConfig {
@@ -21,12 +28,19 @@ export interface McpServerConfig {
   cwd: string
 }
 
+/** One tool execution result, before the harness pipeline renders it. */
+export interface McpCallOutcome {
+  /** Text sent back to the model (already bounded). */
+  content: string
+  isError: boolean
+}
+
 /** A live per-review MCP host. */
 export interface McpHost {
   /** Discover tools exposed by the server, renamed with the `mcp_github_` prefix. */
   listTools(signal: AbortSignal): Promise<RawMcpTool[]>
   /** Call one remote tool by its name without the prefix. */
-  call(remoteName: string, args: Record<string, unknown>, signal: AbortSignal): Promise<GuardedToolResult>
+  call(remoteName: string, args: Record<string, unknown>, signal: AbortSignal): Promise<McpCallOutcome>
   /** Close the server process; idempotent. */
   close(): Promise<void>
 }
@@ -130,7 +144,7 @@ export class StdioMcpHost implements McpHost {
    * @param signal - per-call cancellation and timeout.
    * @returns text content bounded to the configured result limit.
    */
-  async call(remoteName: string, args: Record<string, unknown>, signal: AbortSignal): Promise<GuardedToolResult> {
+  async call(remoteName: string, args: Record<string, unknown>, signal: AbortSignal): Promise<McpCallOutcome> {
     try {
       const result = await this.client.callTool(
         { name: remoteName, arguments: args },

@@ -1,8 +1,23 @@
 # DeepSeek Harness cordis.yml example for dsh-github-reviewer.
-# Mount the plugin (installed as @lingobridge/dsh-github-reviewer) and
-# configure one account per entry under accounts.
+# The plugin drives reviews through the harness agent loop, so the deployment
+# must mount the agent-loop family. A minimal set is shown below; swap in
+# whatever spine/LLM/persistence plugins your deployment already uses.
 
 plugins:
+  # ---- Harness companions required by github-reviewer ----
+
+  # Any LLM adapter registering the provider route used below.
+  llm-deepseek:
+    $if: 'false' # placeholder: mount your own LLM adapter
+  # The agent loop + system-prompt assembly + tool pipeline.
+  # agent-spine-demo pre-creates one agent; any composition providing the
+  # `agents` registry and `sessions` store works.
+  # agent-spine:
+  #   $if: 'false' # placeholder
+  # Durable sessions: without this, PR sessions are memory-only across restarts.
+  # session-persistence-jsonl:
+  #   $if: 'false' # placeholder
+
   github-reviewer:
     config:
       accounts:
@@ -20,20 +35,22 @@ plugins:
           pollIntervalMs: 120000
           repositories:
             - 'owner/repo'
-          # Harness LLM route used for this account's reviews.
+          # Harness LLM route used for this account's review agents.
           provider: 'deepseek'
           model: 'deepseek-chat'
           review:
             maxToolCalls: 30
             toolTimeoutMs: 30000
             toolResultLimit: 60000
+            # Overall deadline for one review/chat turn; the agent is
+            # cancelled past it.
             timeoutMs: 900000
             # Optional fallback used only when the base repository has no
             # .github/review_instructions.md at the PR base.
             defaultInstructions: |
               Review this pull request for correctness, regressions, security issues,
               and missing tests. Leave concise inline comments where useful.
-          # Required per-review GitHub MCP server. The plugin injects
+          # Required per-turn GitHub MCP server. The plugin injects
           # GITHUB_PERSONAL_ACCESS_TOKEN and GITHUB_HOST at runtime; do not
           # put GitHub tokens here.
           mcp:
@@ -46,10 +63,3 @@ plugins:
           # Optional cursor state file; defaults to
           # ./.dsh-github-reviewer/<account>.json next to the process.
           statePath: ''
-          # Optional per-PR session history file; defaults to
-          # ./.dsh-github-reviewer/<account>.sessions.json. Reviews and /bot
-          # chats on the same PR share one session: later interactions replay
-          # the stored conversation.
-          sessionPath: ''
-          # Optional bound on each PR's stored history; oldest messages drop.
-          sessionMaxMessages: 60

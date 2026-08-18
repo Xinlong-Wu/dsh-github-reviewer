@@ -1,13 +1,16 @@
 /**
- * PR-review tool guard: wraps GitHub MCP tools exposed to the model so every
- * call must target the current PR, reads are limited to allowed methods and
- * refs, and writes are limited to the COMMENT pending-review workflow.
- * Ported from LingoBridge's `guardReviewTools`.
+ * PR-review tool guard: wraps the GitHub MCP tools exposed to the review
+ * agent as harness `ToolDefinition`s so every call must target the current
+ * PR, reads are limited to allowed methods and refs, and writes are limited
+ * to the COMMENT pending-review workflow. The validation and write-tracking
+ * state are shared with LingoBridge's `guardReviewTools`; the execution
+ * bridge is the harness tool pipeline (`execute(args, exec)`).
  * @module
  */
 
-import type { ToolSchema } from '@deepseek-ai/dsh-llm'
-import type { PullRequest, Repository } from './model.ts'
+import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
+import type { McpHost, RawMcpTool } from './mcp-host.ts'
+import type { PullRequest, Repository, ReviewInstructions } from './model.ts'
 import { fullName, sameRepo, shortSHA } from './model.ts'
 
 /** Prefix of model-facing guarded tool names (`mcp_github_<remote>`). */
@@ -28,26 +31,10 @@ const ALLOWED_REVIEW_READ_METHOD_LIST = ['get', 'get_diff', 'get_files', 'get_st
 /** Log-line cap for error summaries. */
 const REVIEW_LOG_TEXT_LIMIT = 500
 
-/** One MCP tool as discovered from the server, before guarding. */
-export interface RawMcpTool {
-  /** Remote tool name, e.g. `pull_request_read`. */
-  name: string
-  description: string
-  /** JSON Schema for the arguments. */
-  inputSchema: Record<string, unknown>
-}
-
-/** Outcome of one guarded tool execution. */
-export interface GuardedToolResult {
-  /** Result text sent back to the model (already bounded). */
-  content: string
-  isError: boolean
-}
-
 /**
- * Write-tracking state for one review run. The caller reads
+ * Write-tracking state for one review turn. The caller reads
  * {@link submittedComment} to decide whether the cursor may be marked
- * reviewed.
+ * reviewed, and {@link toolCallsExecuted} to enforce the tool-call budget.
  */
 export class ReviewGuardState {
   submittedComment = false
@@ -56,6 +43,23 @@ export class ReviewGuardState {
   inlineCommentsAttempted = 0
   inlineCommentsAdded = 0
   submitAttempted = false
+  toolCallsExecuted = 0
+}
+
+/**
+ * The per-turn context the guarded tools read at execution time: the PR under
+ * review, the shared write-tracking state, the live MCP host, and the current
+ * flow's trusted instructions. Set by the agent runner before each turn and
+ * cleared afterwards.
+ */
+export interface TurnSlot {
+  current?: {
+    pr: PullRequest
+    flow: 'review' | 'chat'
+    state: ReviewGuardState
+    instructions?: ReviewInstructions
+    host: McpHost
+  }
 }
 
 /** Log observer used by the guard for normalized-call diagnostics. */
@@ -326,199 +330,189 @@ function restrictReviewWriteSchema(raw: Record<string, unknown>): Record<string,
   })
 }
 
-/** One guarded MCP tool exposed to the model. */
-export interface GuardedTool {
-  /** Model-facing tool schema (name, description, JSON Schema parameters). */
-  spec(): ToolSchema
-  /**
-   * Validate and execute one tool call against the current PR.
-   * @param args - raw JSON arguments from the model.
-   * @param signal - per-call cancellation.
-   * @returns the bounded result.
-   */
-  execute(args: Record<string, unknown>, signal: AbortSignal): Promise<GuardedToolResult>
+/** The canonical value one guarded tool returns; `render` extracts its text. */
+interface GuardedToolValue {
+  content: Array<{ type: 'text'; text: string }>
 }
 
-/** Execute a raw MCP tool by remote name. */
-export interface McpExecutor {
-  call(remoteName: string, args: Record<string, unknown>, signal: AbortSignal): Promise<GuardedToolResult>
+/** Model-facing content projection of the canonical value. */
+function renderGuardedValue(_args: unknown, value: unknown): Array<{ type: 'text'; text: string }> {
+  const content = (value as Partial<GuardedToolValue> | null | undefined)?.content ?? []
+  const text = content.map(block => block.text ?? '').join('')
+  return [{ type: 'text', text }]
 }
 
-class GuardedToolImpl implements GuardedTool {
-  /**
-   * @param inner - raw MCP tool.
-   * @param remote - remote tool name without the prefix.
-   * @param pr - the PR under review.
-   * @param state - shared review guard state.
-   * @param executor - raw MCP call bridge.
-   * @param logger - guard diagnostics observer.
-   */
-  constructor(
-    readonly inner: RawMcpTool,
-    readonly remote: string,
-    readonly pr: PullRequest,
-    readonly state: ReviewGuardState,
-    readonly executor: McpExecutor,
-    readonly logger: GuardLogger,
-  ) {}
-
-  spec(): ToolSchema {
-    switch (this.remote) {
+/** One guarded tool built from a discovered MCP tool. */
+function buildGuardedTool(
+  inner: RawMcpTool,
+  pr: PullRequest,
+  slot: TurnSlot,
+  limits: { maxToolCalls: number; toolTimeoutMs: number },
+  logger: GuardLogger,
+): ToolDefinition {
+  const remote = githubRemoteToolName(inner.name)
+  if (remote === undefined || !ALLOWED_REVIEW_REMOTE_TOOLS.has(remote)) {
+    throw new Error(`raw tool "${inner.name}" is not a guardable github tool`)
+  }
+  const parameters = (() => {
+    switch (remote) {
       case 'pull_request_read':
-        return {
-          name: `${GITHUB_MCP_TOOL_PREFIX}${this.remote}`,
-          description: this.inner.description,
-          parameters: restrictPullRequestReadSchema(this.inner.inputSchema),
-        }
-      case 'get_file_contents':
-        return {
-          name: `${GITHUB_MCP_TOOL_PREFIX}${this.remote}`,
-          description: appendGetFileContentsGuardDescription(this.inner.description, this.pr),
-          parameters: this.inner.inputSchema,
-        }
+        return restrictPullRequestReadSchema(inner.inputSchema)
       case 'pull_request_review_write':
-        return {
-          name: `${GITHUB_MCP_TOOL_PREFIX}${this.remote}`,
-          description: this.inner.description,
-          parameters: restrictReviewWriteSchema(this.inner.inputSchema),
-        }
+        return restrictReviewWriteSchema(inner.inputSchema)
       default:
-        return {
-          name: `${GITHUB_MCP_TOOL_PREFIX}${this.remote}`,
-          description: this.inner.description,
-          parameters: this.inner.inputSchema,
-        }
+        return inner.inputSchema
     }
-  }
+  })()
+  const description = remote === 'get_file_contents'
+    ? appendGetFileContentsGuardDescription(inner.description, pr)
+    : inner.description
 
-  async execute(args: Record<string, unknown>, signal: AbortSignal): Promise<GuardedToolResult> {
-    try {
-      this.validateAndMutate(args)
-    } catch (error) {
-      return { content: error instanceof Error ? error.message : String(error), isError: true }
-    }
-    this.recordWriteAttempt(args)
-    const result = await this.executor.call(this.remote, args, signal)
-    this.recordWriteResult(args, result)
-    return result
+  const definition: ToolDefinition = {
+    name: `${GITHUB_MCP_TOOL_PREFIX}${remote}`,
+    description,
+    parameters,
+    timeoutMs: limits.toolTimeoutMs,
+    output: {
+      schema: {
+        type: 'object',
+        properties: { content: { type: 'array', items: {} } },
+        required: ['content'],
+        additionalProperties: false,
+      },
+      render: renderGuardedValue,
+    },
+    async execute(args, exec): Promise<GuardedToolValue> {
+      const turn = slot.current
+      if (turn === undefined) throw new Error('github reviewer turn is not active')
+      const parsed = (typeof args === 'object' && args !== null ? args : {}) as Record<string, unknown>
+      validateAndMutate(remote, parsed, turn.pr, logger)
+      if (turn.state.toolCallsExecuted >= limits.maxToolCalls) {
+        throw new Error(`github review hit the max_tool_calls limit (${limits.maxToolCalls})`)
+      }
+      turn.state.toolCallsExecuted++
+      recordWriteAttempt(remote, parsed, turn.state)
+      const callSignal = AbortSignal.any([exec.signal, AbortSignal.timeout(limits.toolTimeoutMs)])
+      const result = await turn.host.call(remote, parsed, callSignal)
+      recordWriteResult(remote, parsed, result, turn, logger)
+      if (result.isError) throw new Error(result.content)
+      return { content: [{ type: 'text', text: result.content }] }
+    },
   }
+  return definition
+}
 
-  private validateAndMutate(args: Record<string, unknown>): void {
-    switch (this.remote) {
-      case 'pull_request_read':
-        validatePullRequestReadArgs(args, this.pr)
-        return
-      case 'get_file_contents':
-        validateFileContentsArgs(args, this.pr)
-        return
-      case 'pull_request_review_write':
-        validateReviewWriteArgs(args, this.pr, this.logger)
-        return
-      case 'add_comment_to_pending_review':
-        validateBasePRArgs(args, this.pr)
-        validateReviewCommentArgs(args)
-        return
-      default:
-        throw new Error(`github mcp tool "${this.remote}" is not allowed for automated PR review`)
-    }
+function validateAndMutate(remote: string, args: Record<string, unknown>, pr: PullRequest, logger: GuardLogger): void {
+  switch (remote) {
+    case 'pull_request_read':
+      validatePullRequestReadArgs(args, pr)
+      return
+    case 'get_file_contents':
+      validateFileContentsArgs(args, pr)
+      return
+    case 'pull_request_review_write':
+      validateReviewWriteArgs(args, pr, logger)
+      return
+    case 'add_comment_to_pending_review':
+      validateBasePRArgs(args, pr)
+      validateReviewCommentArgs(args)
+      return
+    default:
+      throw new Error(`github mcp tool "${remote}" is not allowed for automated PR review`)
   }
+}
 
-  private recordWriteAttempt(args: Record<string, unknown>): void {
-    switch (this.remote) {
-      case 'pull_request_review_write':
-        this.state.writeAttempted = true
-        if (isCommentSubmit(args)) this.state.submitAttempted = true
-        return
-      case 'add_comment_to_pending_review':
-        this.state.writeAttempted = true
-        this.state.inlineCommentsAttempted++
-        return
-      default:
-        return
-    }
+function recordWriteAttempt(remote: string, args: Record<string, unknown>, state: ReviewGuardState): void {
+  switch (remote) {
+    case 'pull_request_review_write':
+      state.writeAttempted = true
+      if (isCommentSubmit(args)) state.submitAttempted = true
+      return
+    case 'add_comment_to_pending_review':
+      state.writeAttempted = true
+      state.inlineCommentsAttempted++
+      return
+    default:
+      return
   }
+}
 
-  private recordWriteResult(args: Record<string, unknown>, result: GuardedToolResult): void {
-    switch (this.remote) {
-      case 'pull_request_review_write':
-        this.recordReviewWriteResult(args, result)
-        return
-      case 'add_comment_to_pending_review':
-        this.recordReviewCommentResult(args, result)
-        return
-      default:
-        return
-    }
-  }
-
-  private recordReviewWriteResult(args: Record<string, unknown>, result: GuardedToolResult): void {
-    const method = stringArg(args, 'method').value
-    const body = stringArg(args, 'body').value
-    const bodyChars = reviewLogTextChars(body)
-    const label = `repo=${fullName(this.pr.base.repo)} number=${this.pr.number} head=${shortSHA(this.pr.head.sha)}`
-    switch (method) {
-      case 'create': {
+function recordWriteResult(
+  remote: string,
+  args: Record<string, unknown>,
+  result: { content: string; isError: boolean },
+  turn: NonNullable<TurnSlot['current']>,
+  logger: GuardLogger,
+): void {
+  switch (remote) {
+    case 'pull_request_review_write': {
+      const method = stringArg(args, 'method').value
+      const body = stringArg(args, 'body').value
+      const bodyChars = reviewLogTextChars(body)
+      const label = `repo=${fullName(turn.pr.base.repo)} number=${turn.pr.number} head=${shortSHA(turn.pr.head.sha)}`
+      if (method === 'create') {
         if (result.isError) {
-          this.logger.warn(`github pending review create failed ${label} error=${summarizeReviewLogText(result.content, REVIEW_LOG_TEXT_LIMIT)}`)
+          logger.warn(`github pending review create failed ${label} error=${summarizeReviewLogText(result.content, REVIEW_LOG_TEXT_LIMIT)}`)
           return
         }
-        this.state.pendingReviewCreated = true
-        this.logger.debug(`github pending review created ${label}`)
+        turn.state.pendingReviewCreated = true
+        logger.debug(`github pending review created ${label}`)
         return
       }
-      case 'submit_pending': {
+      if (method === 'submit_pending') {
         if (result.isError) {
-          this.logger.warn(`github pending review submit failed ${label} body_chars=${bodyChars} error=${summarizeReviewLogText(result.content, REVIEW_LOG_TEXT_LIMIT)}`)
+          logger.warn(`github pending review submit failed ${label} body_chars=${bodyChars} error=${summarizeReviewLogText(result.content, REVIEW_LOG_TEXT_LIMIT)}`)
           return
         }
-        if (isCommentSubmit(args)) this.state.submittedComment = true
-        this.logger.debug(`github pending review submitted ${label} body_chars=${bodyChars}`)
+        if (isCommentSubmit(args)) turn.state.submittedComment = true
+        logger.debug(`github pending review submitted ${label} body_chars=${bodyChars}`)
         return
       }
-      default:
-        return
-    }
-  }
-
-  private recordReviewCommentResult(args: Record<string, unknown>, result: GuardedToolResult): void {
-    const path = stringArg(args, 'path').value
-    const subjectType = stringArg(args, 'subjectType').value
-    const body = stringArg(args, 'body').value
-    const bodyChars = reviewLogTextChars(body)
-    const line = intArg(args, 'line')
-    const startLine = intArg(args, 'startLine')
-    const side = stringArg(args, 'side').value
-    const startSide = stringArg(args, 'startSide').value
-    const label = `repo=${fullName(this.pr.base.repo)} number=${this.pr.number} head=${shortSHA(this.pr.head.sha)}`
-    const position = `path=${path} subject_type=${subjectType} start_line=${startLine.ok ? String(startLine.value) : ''} line=${line.ok ? String(line.value) : ''} start_side=${startSide} side=${side}`
-    if (result.isError) {
-      this.logger.warn(`github pending review comment failed ${label} ${position} body_chars=${bodyChars} error=${summarizeReviewLogText(result.content, REVIEW_LOG_TEXT_LIMIT)}`)
       return
     }
-    this.state.inlineCommentsAdded++
-    this.logger.debug(`github pending review comment added ${label} ${position} body_chars=${bodyChars}`)
+    case 'add_comment_to_pending_review': {
+      const path = stringArg(args, 'path').value
+      const subjectType = stringArg(args, 'subjectType').value
+      const body = stringArg(args, 'body').value
+      const bodyChars = reviewLogTextChars(body)
+      const line = intArg(args, 'line')
+      const startLine = intArg(args, 'startLine')
+      const side = stringArg(args, 'side').value
+      const startSide = stringArg(args, 'startSide').value
+      const label = `repo=${fullName(turn.pr.base.repo)} number=${turn.pr.number} head=${shortSHA(turn.pr.head.sha)}`
+      const position = `path=${path} subject_type=${subjectType} start_line=${startLine.ok ? String(startLine.value) : ''} line=${line.ok ? String(line.value) : ''} start_side=${startSide} side=${side}`
+      if (result.isError) {
+        logger.warn(`github pending review comment failed ${label} ${position} body_chars=${bodyChars} error=${summarizeReviewLogText(result.content, REVIEW_LOG_TEXT_LIMIT)}`)
+        return
+      }
+      turn.state.inlineCommentsAdded++
+      logger.debug(`github pending review comment added ${label} ${position} body_chars=${bodyChars}`)
+      return
+    }
+    default:
+      return
   }
 }
 
 /**
- * Filter and wrap discovered MCP tools into the guarded review tool set.
- * Non-GitHub tools, disallowed remote names, and duplicates are skipped with
- * a warning.
+ * Filter and wrap discovered MCP tools into harness tool definitions bound to
+ * the shared turn slot. Non-GitHub tools, disallowed remote names, and
+ * duplicates are skipped with a warning.
  * @param tools - tools discovered from the per-review MCP server.
  * @param pr - the PR under review.
- * @param state - shared review guard state.
- * @param executor - raw MCP call bridge.
+ * @param slot - the mutable per-turn context read at execution time.
+ * @param limits - tool-call budget and per-call timeout.
  * @param logger - guard diagnostics observer.
- * @returns guarded tools; empty when the server exposed no allowed review tools.
+ * @returns guarded tool definitions; empty when the server exposed no allowed review tools.
  */
-export function guardReviewTools(
+export function buildGuardedToolDefinitions(
   tools: RawMcpTool[],
   pr: PullRequest,
-  state: ReviewGuardState,
-  executor: McpExecutor,
+  slot: TurnSlot,
+  limits: { maxToolCalls: number; toolTimeoutMs: number },
   logger: GuardLogger,
-): GuardedTool[] {
-  const out: GuardedTool[] = []
+): ToolDefinition[] {
+  const out: ToolDefinition[] = []
   const seen = new Set<string>()
   for (const tool of tools) {
     const remote = githubRemoteToolName(tool.name)
@@ -535,7 +529,7 @@ export function guardReviewTools(
       continue
     }
     seen.add(remote)
-    out.push(new GuardedToolImpl(tool, remote, pr, state, executor, logger))
+    out.push(buildGuardedTool(tool, pr, slot, limits, logger))
   }
   return out
 }

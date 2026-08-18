@@ -2,14 +2,11 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { StreamChunk } from '@deepseek-ai/dsh-llm'
-import { CallId } from '@deepseek-ai/dsh-llm'
 import type { ResolvedAccountConfig } from '../src/config.ts'
 import type { GitHubClient } from '../src/github/client.ts'
 import type { PullRequest } from '../src/github/model.ts'
-import type { McpHost } from '../src/github/mcp-host.ts'
 import { AccountPoller, recordingLogger } from '../src/poller.ts'
-import { JsonFileSessionStore } from '../src/session-store.ts'
+import type { ReviewDriver } from '../src/poller.ts'
 import { JsonFileCursorStore } from '../src/state-file.ts'
 
 const pr: PullRequest = {
@@ -35,17 +32,9 @@ const account: ResolvedAccountConfig = {
   review: { maxToolCalls: 30, toolTimeoutMs: 5000, toolResultLimit: 60000, timeoutMs: 30_000, defaultInstructions: '' },
   mcp: { command: 'github-mcp-server', args: ['stdio'], env: {}, cwd: '' },
   statePath: '',
-  sessionPath: '',
-  sessionMaxMessages: 60,
 }
 
 const signal = new AbortController().signal
-const rawTools = [
-  { name: 'mcp_github_pull_request_read', description: 'read', inputSchema: { type: 'object', properties: {} } },
-  { name: 'mcp_github_get_file_contents', description: 'file', inputSchema: { type: 'object', properties: {} } },
-  { name: 'mcp_github_pull_request_review_write', description: 'write', inputSchema: { type: 'object', properties: {} } },
-  { name: 'mcp_github_add_comment_to_pending_review', description: 'comment', inputSchema: { type: 'object', properties: {} } },
-]
 
 interface FakeReviewComment {
   id: number
@@ -90,117 +79,69 @@ function fakeClient(): FakeClient {
   return c
 }
 
-const text = (value: string): StreamChunk => ({ type: 'block-end', index: 0, block: { type: 'text', text: value } })
-const toolCall = (id: string, name: string, args: string): StreamChunk => ({
-  type: 'block-end',
-  index: 1,
-  block: { type: 'tool-call', id: CallId(id), name, arguments: args },
-})
-const stop = (): StreamChunk => ({ type: 'finish', reason: { kind: 'stop' } })
-const moreTools = (): StreamChunk => ({ type: 'finish', reason: { kind: 'tool-calls' } })
-
-/** Scripted LLM streamer: plays each scripted turn, then repeats the last. */
-function scripted(initial: StreamChunk[][], streamCalls: Array<unknown[]> = []) {
-  let turns = initial
-  let index = 0
-  return {
-    streamCalls,
-    setTurns: (next: StreamChunk[][]) => { turns = next; index = 0 },
-    stream: vi.fn((options: unknown) => {
-      // Snapshot the message list: the caller appends to it after this turn.
-      const snapshot = { ...options as Record<string, unknown> }
-      if (Array.isArray((options as { messages?: unknown }).messages)) {
-        snapshot.messages = [...(options as { messages: unknown[] }).messages]
-      }
-      streamCalls.push([snapshot])
-      const chunks = turns[Math.min(index, turns.length - 1)] ?? []
-      index++
-      return {
-        async *[Symbol.asyncIterator]() {
-          for (const chunk of chunks) yield chunk
-        },
-      }
+/** A scripted review driver recording every turn. */
+function fakeDriver() {
+  const reviewCalls: Array<{ pr: PullRequest; instructions: { text: string; source: string } }> = []
+  const chatCalls: Array<{ pr: PullRequest; message: string }> = []
+  const driver: ReviewDriver = {
+    driveReview: vi.fn(async (target, instructions) => {
+      reviewCalls.push({ pr: target, instructions })
+      return { submitted: true, text: 'Reviewed.' }
     }),
+    driveChat: vi.fn(async (target, message) => {
+      chatCalls.push({ pr: target, message })
+      return 'The reply.'
+    }),
+    dispose: vi.fn(async () => {}),
   }
+  return { driver, reviewCalls, chatCalls }
 }
-
-const submitReviewTurns: StreamChunk[][] = [
-  [toolCall('c1', 'mcp_github_pull_request_review_write', JSON.stringify({ owner: 'owner', repo: 'repo', pullNumber: 42, method: 'create' })), moreTools()],
-  [toolCall('c2', 'mcp_github_pull_request_review_write', JSON.stringify({ owner: 'owner', repo: 'repo', pullNumber: 42, method: 'submit_pending', event: 'COMMENT' })), moreTools()],
-  [text('Reviewed.'), stop()],
-]
 
 let dir: string
 let store: JsonFileCursorStore
-let sessions: JsonFileSessionStore
-let mcpCalls: Array<{ remote: string; args: Record<string, unknown> }>
-let lastToken: string
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), 'dsh-github-reviewer-'))
   store = new JsonFileCursorStore(join(dir, 'cursor.json'))
-  sessions = new JsonFileSessionStore(join(dir, 'sessions.json'), 60)
-  mcpCalls = []
-  lastToken = ''
 })
 
 afterEach(async () => {
   await rm(dir, { recursive: true, force: true })
 })
 
-function fakeHost(): McpHost {
-  return {
-    listTools: async () => rawTools,
-    call: async (remote, args) => {
-      mcpCalls.push({ remote, args })
-      return { content: 'ok', isError: false }
-    },
-    close: async () => {},
-  }
-}
-
 function buildPoller(
   c: FakeClient,
-  llm: ReturnType<typeof scripted>,
+  driver: ReviewDriver,
   lines: string[],
   instructions: { text: string; source: string } | 'missing' = 'missing',
   defaultInstructions = '',
 ) {
   const resolved = { ...account, review: { ...account.review, defaultInstructions } }
-  const poller = new AccountPoller({
+  c.instructions = instructions
+  return new AccountPoller({
     accountName: 'reviewer',
     account: resolved,
-    llm,
     client: c as unknown as GitHubClient,
     tokenSource: { token: async () => 'installation-token' },
     store,
-    sessions,
+    driver,
     logger: recordingLogger(lines),
-    mcpHostFactory: async (token) => {
-      lastToken = token
-      return fakeHost()
-    },
   })
-  c.instructions = instructions
-  return poller
 }
 
 describe('AccountPoller review flow', () => {
-  it('reviews a new PR, injects the installation token, and marks the cursor reviewed', async () => {
+  it('reviews a new PR and marks the cursor reviewed', async () => {
     const c = fakeClient()
     c.prs = [pr]
-    c.instructions = { text: 'trusted', source: 'owner/repo@main' }
-    const llm = scripted(submitReviewTurns)
+    const { driver, reviewCalls } = fakeDriver()
     const lines: string[] = []
-    const poller = buildPoller(c, llm, lines, { text: 'trusted', source: 'owner/repo@main' })
+    const poller = buildPoller(c, driver, lines, { text: 'trusted', source: 'owner/repo@main' })
 
     await poller.pollOnce(signal)
-    poller.dispose()
+    await poller.dispose()
 
-    expect(lastToken).toBe('installation-token')
-    expect(mcpCalls).toHaveLength(2)
-    expect(mcpCalls[0].args.method).toBe('create')
-    expect(mcpCalls[1].args).toEqual({ owner: 'owner', repo: 'repo', pullNumber: 42, method: 'submit_pending', event: 'COMMENT' })
+    expect(reviewCalls).toHaveLength(1)
+    expect(reviewCalls[0].instructions.text).toBe('trusted')
     const state = JSON.parse(await readFile(store.filePath, 'utf8')) as { prs: Record<string, { status: string; headSHA: string }> }
     expect(state.prs['owner/repo#42'].status).toBe('reviewed')
     expect(lines.some(line => line.includes('github review submitted'))).toBe(true)
@@ -209,188 +150,128 @@ describe('AccountPoller review flow', () => {
   it('does not re-review an unchanged reviewed PR', async () => {
     const c = fakeClient()
     c.prs = [pr]
-    const llm = scripted(submitReviewTurns)
+    const { driver, reviewCalls } = fakeDriver()
     const lines: string[] = []
-    const poller = buildPoller(c, llm, lines, { text: 'trusted', source: 'x' })
+    const poller = buildPoller(c, driver, lines, { text: 'trusted', source: 'x' })
 
     await poller.pollOnce(signal)
-    const firstCalls = llm.streamCalls.length
     await poller.pollOnce(signal)
-    poller.dispose()
+    await poller.dispose()
 
-    expect(llm.streamCalls.length).toBe(firstCalls)
+    expect(reviewCalls).toHaveLength(1)
   })
 
   it('skips draft PRs', async () => {
     const c = fakeClient()
     c.prs = [{ ...pr, draft: true }]
-    const llm = scripted(submitReviewTurns)
+    const { driver, reviewCalls } = fakeDriver()
     const lines: string[] = []
-    const poller = buildPoller(c, llm, lines, { text: 'trusted', source: 'x' })
+    const poller = buildPoller(c, driver, lines, { text: 'trusted', source: 'x' })
 
     await poller.pollOnce(signal)
-    poller.dispose()
+    await poller.dispose()
 
-    expect(llm.streamCalls.length).toBe(0)
+    expect(reviewCalls).toHaveLength(0)
     expect(lines.some(line => line.includes('skipping draft github pr'))).toBe(true)
   })
 
   it('marks missing instructions and retries only after the head SHA changes', async () => {
     const c = fakeClient()
     c.prs = [pr]
-    c.instructions = 'missing'
-    const llm = scripted(submitReviewTurns)
+    const { driver, reviewCalls } = fakeDriver()
     const lines: string[] = []
-    const poller = buildPoller(c, llm, lines, 'missing')
+    const poller = buildPoller(c, driver, lines, 'missing')
 
     await poller.pollOnce(signal)
     const state = JSON.parse(await readFile(store.filePath, 'utf8')) as { prs: Record<string, { status: string }> }
     expect(state.prs['owner/repo#42'].status).toBe('missing_instructions')
-    expect(llm.streamCalls.length).toBe(0)
+    expect(reviewCalls).toHaveLength(0)
 
     await poller.pollOnce(signal)
-    expect(llm.streamCalls.length).toBe(0)
+    expect(reviewCalls).toHaveLength(0)
 
     c.prs = [{ ...pr, head: { ...pr.head, sha: 'head-sha-2' } }]
     await poller.pollOnce(signal)
-    expect(llm.streamCalls.length).toBe(0)
-    poller.dispose()
+    expect(reviewCalls).toHaveLength(0)
+    await poller.dispose()
   })
 
   it('falls back to configured default instructions', async () => {
     const c = fakeClient()
     c.prs = [pr]
-    const llm = scripted(submitReviewTurns)
+    const { driver, reviewCalls } = fakeDriver()
     const lines: string[] = []
-    const poller = buildPoller(c, llm, lines, 'missing', 'review carefully')
+    const poller = buildPoller(c, driver, lines, 'missing', 'review carefully')
 
     await poller.pollOnce(signal)
-    poller.dispose()
+    await poller.dispose()
 
-    expect(llm.streamCalls.length).toBeGreaterThan(0)
+    expect(reviewCalls).toHaveLength(1)
+    expect(reviewCalls[0].instructions.text).toBe('review carefully')
     expect(lines.some(line => line.includes('falling back to config default_instructions'))).toBe(true)
   })
-})
 
-describe('AccountPoller per-PR session', () => {
-  it('replays the review conversation in a later /bot chat on the same PR', async () => {
+  it('does not mark the cursor when the review did not submit a COMMENT review', async () => {
     const c = fakeClient()
     c.prs = [pr]
-    const llm = scripted(submitReviewTurns)
-    const lines: string[] = []
-    const poller = buildPoller(c, llm, lines, { text: 'trusted', source: 'x' })
-    await poller.pollOnce(signal)
-
-    const chatTurns: StreamChunk[][] = [[text('It changed the login flow.'), stop()]]
-    c.issueComments = [
-      { id: 9, body: '/bot what changed?', user: { login: 'alice', type: 'User' }, createdAt: new Date(), htmlUrl: 'u' },
-    ]
-    llm.setTurns(chatTurns)
-    await poller.pollOnce(signal)
-    poller.dispose()
-
-    // The chat call is the fourth stream call; its messages replay the session.
-    const chatOptions = llm.streamCalls[3][0] as { messages: Array<{ role: string; content: Array<{ type: string; text?: string }> }> }
-    expect(chatOptions.messages).toHaveLength(3)
-    expect(chatOptions.messages[0].role).toBe('user')
-    expect(chatOptions.messages[0].content[0].text).toContain('<pull_request>')
-    expect(chatOptions.messages[1].role).toBe('assistant')
-    expect(chatOptions.messages[1].content[0].text).toBe('Reviewed.')
-    expect(chatOptions.messages[2].content[0].text).toBe('what changed?')
-  })
-
-  it('persists the review and chat exchange in one per-PR session file', async () => {
-    const c = fakeClient()
-    c.prs = [pr]
-    const llm = scripted(submitReviewTurns)
-    const lines: string[] = []
-    const poller = buildPoller(c, llm, lines, { text: 'trusted', source: 'x' })
-    await poller.pollOnce(signal)
-
-    const chatTurns: StreamChunk[][] = [[text('Answer.'), stop()]]
-    c.issueComments = [
-      { id: 9, body: '/bot hi', user: { login: 'alice', type: 'User' }, createdAt: new Date(), htmlUrl: 'u' },
-    ]
-    llm.setTurns(chatTurns)
-    await poller.pollOnce(signal)
-    poller.dispose()
-
-    const body = JSON.parse(await readFile(sessions.filePath, 'utf8')) as {
-      sessions: Record<string, Array<{ role: string; text: string }>>
+    const driver: ReviewDriver = {
+      driveReview: async () => ({ submitted: false, text: 'failed to inspect' }),
+      driveChat: async () => '',
+      dispose: async () => {},
     }
-    const history = body.sessions['owner/repo#42']
-    expect(history).toHaveLength(4)
-    expect(history[0]).toMatchObject({ role: 'user' })
-    expect(history[0].text).toContain('<pull_request>')
-    expect(history[1]).toEqual({ role: 'assistant', text: 'Reviewed.' })
-    expect(history[2]).toEqual({ role: 'user', text: 'hi' })
-    expect(history[3]).toEqual({ role: 'assistant', text: 'Answer.' })
-  })
-
-  it('keeps different PRs in separate sessions', async () => {
-    const c = fakeClient()
-    const otherPr: PullRequest = { ...pr, number: 43 }
-    c.prs = [pr, otherPr]
-    const llm = scripted(submitReviewTurns)
     const lines: string[] = []
-    const poller = buildPoller(c, llm, lines, { text: 'trusted', source: 'x' })
-    await poller.pollOnce(signal)
-    poller.dispose()
+    const poller = buildPoller(c, driver, lines, { text: 'trusted', source: 'x' })
 
-    const body = JSON.parse(await readFile(sessions.filePath, 'utf8')) as {
-      sessions: Record<string, Array<{ role: string; text: string }>>
-    }
-    expect(body.sessions['owner/repo#42']).toHaveLength(2)
-    expect(body.sessions['owner/repo#43']).toHaveLength(2)
+    await poller.pollOnce(signal)
+    const state = await store.load()
+    expect(state.prs['owner/repo#42']).toBeUndefined()
+    expect(lines.some(line => line.includes('completed without COMMENT submission'))).toBe(true)
+    await poller.dispose()
   })
 })
 
 describe('AccountPoller comment commands', () => {
-  function reviewedPoller(c: FakeClient, llm: ReturnType<typeof scripted>, lines: string[]) {
-    return buildPoller(c, llm, lines, { text: 'trusted', source: 'x' })
+  function reviewedPoller(c: FakeClient, driver: ReviewDriver, lines: string[]) {
+    return buildPoller(c, driver, lines, { text: 'trusted', source: 'x' })
   }
 
   it('answers /bot comments with an issue comment reply', async () => {
     const c = fakeClient()
     c.prs = [pr]
-    const chatTurns: StreamChunk[][] = [
-      [toolCall('c1', 'mcp_github_pull_request_read', JSON.stringify({ owner: 'owner', repo: 'repo', pullNumber: 42, method: 'get' })), moreTools()],
-      [text('The PR changes the login flow.'), stop()],
-    ]
-    const llm = scripted(submitReviewTurns)
+    const { driver, chatCalls } = fakeDriver()
     const lines: string[] = []
-    const poller = reviewedPoller(c, llm, lines)
+    const poller = reviewedPoller(c, driver, lines)
     await poller.pollOnce(signal)
 
     c.issueComments = [
       { id: 9, body: '/bot explain this', user: { login: 'alice', type: 'User' }, createdAt: new Date(), htmlUrl: 'u' },
     ]
-    llm.setTurns(chatTurns)
     await poller.pollOnce(signal)
-    poller.dispose()
+    await poller.dispose()
 
-    expect(c.issueCommentCalls).toEqual(['The PR changes the login flow.'])
+    expect(chatCalls).toHaveLength(1)
+    expect(chatCalls[0].message).toBe('explain this')
+    expect(c.issueCommentCalls).toEqual(['The reply.'])
     expect(lines.some(line => line.includes('github bot chat triggered by comment'))).toBe(true)
   })
 
   it('triggers a re-review on /review and skips later comments', async () => {
     const c = fakeClient()
     c.prs = [pr]
-    const llm = scripted(submitReviewTurns)
+    const { driver, reviewCalls } = fakeDriver()
     const lines: string[] = []
-    const poller = reviewedPoller(c, llm, lines)
+    const poller = reviewedPoller(c, driver, lines)
     await poller.pollOnce(signal)
-    const firstCalls = llm.streamCalls.length
+    const firstCalls = reviewCalls.length
 
     c.issueComments = [
       { id: 1, body: '/review', user: { login: 'alice', type: 'User' }, createdAt: new Date(), htmlUrl: 'u' },
       { id: 2, body: '/bot ignored', user: { login: 'bob', type: 'User' }, createdAt: new Date(), htmlUrl: 'u' },
     ]
-    llm.setTurns(submitReviewTurns)
     await poller.pollOnce(signal)
-    poller.dispose()
+    await poller.dispose()
 
-    expect(llm.streamCalls.length).toBeGreaterThan(firstCalls)
+    expect(reviewCalls.length).toBeGreaterThan(firstCalls)
     expect(c.issueCommentCalls).toHaveLength(0)
     expect(lines.some(line => line.includes('github re-review submitted'))).toBe(true)
   })
@@ -398,39 +279,38 @@ describe('AccountPoller comment commands', () => {
   it('replies to review-thread comments in their thread', async () => {
     const c = fakeClient()
     c.prs = [pr]
-    const chatTurns: StreamChunk[][] = [[text('Reply in thread.'), stop()]]
-    const llm = scripted(submitReviewTurns)
+    const { driver } = fakeDriver()
     const lines: string[] = []
-    const poller = reviewedPoller(c, llm, lines)
+    const poller = reviewedPoller(c, driver, lines)
     await poller.pollOnce(signal)
 
     c.issueComments = []
     c.reviewComments = [
       { id: 5, body: '/bot details?', user: { login: 'alice', type: 'User' }, createdAt: new Date(), htmlUrl: 'u', path: 'a.ts', inReplyTo: 0 },
     ]
-    llm.setTurns(chatTurns)
     await poller.pollOnce(signal)
-    poller.dispose()
+    await poller.dispose()
 
-    expect(c.reviewReplyCalls).toEqual([{ commentId: 5, body: 'Reply in thread.' }])
+    expect(c.reviewReplyCalls).toEqual([{ commentId: 5, body: 'The reply.' }])
   })
 
   it('ignores comments from bots', async () => {
     const c = fakeClient()
     c.prs = [pr]
-    const llm = scripted(submitReviewTurns)
+    const { driver, reviewCalls, chatCalls } = fakeDriver()
     const lines: string[] = []
-    const poller = reviewedPoller(c, llm, lines)
+    const poller = reviewedPoller(c, driver, lines)
     await poller.pollOnce(signal)
-    const firstCalls = llm.streamCalls.length
+    const firstReviewCalls = reviewCalls.length
 
     c.issueComments = [
       { id: 3, body: '/bot hi', user: { login: 'ghost', type: 'Bot' }, createdAt: new Date(), htmlUrl: 'u' },
     ]
     await poller.pollOnce(signal)
-    poller.dispose()
+    await poller.dispose()
 
-    expect(llm.streamCalls.length).toBe(firstCalls)
+    expect(reviewCalls).toHaveLength(firstReviewCalls)
+    expect(chatCalls).toHaveLength(0)
     expect(c.issueCommentCalls).toHaveLength(0)
   })
 })

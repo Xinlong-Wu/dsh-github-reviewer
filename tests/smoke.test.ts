@@ -37,22 +37,27 @@ function validConfig(keyPath: string, overrides: Record<string, unknown> = {}): 
         model: 'deepseek-chat',
         mcp: { command: 'github-mcp-server', args: ['stdio'], env: {}, cwd: '' },
         statePath: join(dir, 'cursor.json'),
-        sessionPath: join(dir, 'sessions.json'),
-        sessionMaxMessages: 60,
         ...overrides,
       },
     },
   }
 }
 
-const emptyStream = (): AsyncIterable<never> => ({
-  async *[Symbol.asyncIterator]() {},
-})
+/** Minimal agent registry and session store stand-ins for activation tests. */
+function provideCoreServices(ctx: Context): void {
+  ctx.provide('agents', {
+    create: vi.fn(),
+    resume: vi.fn(),
+  })
+  ctx.provide('sessions', {
+    flush: vi.fn(async () => true),
+  })
+}
 
 describe('plugin wiring through a real Cordis context', () => {
-  it('declares its name, injects llm, and exports a Config schema', () => {
+  it('declares its name, injects agents/sessions, and exports a Config schema', () => {
     expect(plugin.name).toBe('github-reviewer')
-    expect(plugin.inject).toEqual(['llm'])
+    expect(plugin.inject).toEqual(['agents', 'sessions'])
     expect(plugin.Config).toBeDefined()
     expect(typeof plugin.apply).toBe('function')
   })
@@ -66,7 +71,7 @@ describe('plugin wiring through a real Cordis context', () => {
       return new Response('[]', { status: 200 })
     }))
     const ctx = new Context()
-    ctx.provide('llm', { stream: emptyStream })
+    provideCoreServices(ctx)
     const fiber = await ctx.plugin(plugin, validConfig(keyPath))
     // Let the immediate poll tick settle against the stubbed API.
     await new Promise(resolve => setTimeout(resolve, 50))
@@ -77,33 +82,33 @@ describe('plugin wiring through a real Cordis context', () => {
   it('fails activation on a missing appId', async () => {
     const keyPath = await tempKeyPath()
     const ctx = new Context()
-    ctx.provide('llm', { stream: emptyStream })
+    provideCoreServices(ctx)
     await expect(ctx.plugin(plugin, validConfig(keyPath, { appId: '' }))).rejects.toThrow('appId is required')
   })
 
   it('fails activation on an invalid repository entry', async () => {
     const keyPath = await tempKeyPath()
     const ctx = new Context()
-    ctx.provide('llm', { stream: emptyStream })
+    provideCoreServices(ctx)
     await expect(ctx.plugin(plugin, validConfig(keyPath, { repositories: ['not-a-repo'] }))).rejects.toThrow('owner/repo')
   })
 
   it('fails activation when the private key file is missing', async () => {
     const ctx = new Context()
-    ctx.provide('llm', { stream: emptyStream })
+    provideCoreServices(ctx)
     await expect(ctx.plugin(plugin, validConfig('/nonexistent/key.pem'))).rejects.toThrow('read github app private key')
   })
 
   it('fails activation when mcp.command is missing', async () => {
     const keyPath = await tempKeyPath()
     const ctx = new Context()
-    ctx.provide('llm', { stream: emptyStream })
+    provideCoreServices(ctx)
     await expect(ctx.plugin(plugin, validConfig(keyPath, { mcp: { command: '', args: [] } }))).rejects.toThrow('mcp.command is required')
   })
 
   it('activates with zero accounts as a no-op', async () => {
     const ctx = new Context()
-    ctx.provide('llm', { stream: emptyStream })
+    provideCoreServices(ctx)
     const fiber = await ctx.plugin(plugin, { accounts: {} })
     await fiber.dispose()
     expect(fiber.state).toBe(4) // FiberState.DISPOSED (const enum, not usable as a runtime value)

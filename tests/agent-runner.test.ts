@@ -1,0 +1,333 @@
+import { describe, expect, it, vi } from 'vitest'
+import type { Context } from '@deepseek-ai/cordis'
+import type { AgentRegistry, AgentHandle } from '@deepseek-ai/dsh-agent'
+import type { SessionEvent, SessionStore } from '@deepseek-ai/dsh-session'
+import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
+import { AgentRunner } from '../src/agent-runner.ts'
+import type { ResolvedAccountConfig } from '../src/config.ts'
+import type { McpHost, RawMcpTool } from '../src/github/mcp-host.ts'
+import type { PullRequest } from '../src/github/model.ts'
+import { silentLogger } from '../src/logger.ts'
+
+const pr: PullRequest = {
+  number: 42,
+  title: 't',
+  body: '',
+  htmlUrl: 'u',
+  draft: false,
+  head: { sha: 'head-sha', ref: 'feature', repo: { owner: 'forker', name: 'repo' } },
+  base: { sha: 'base-sha', ref: 'main', repo: { owner: 'owner', name: 'repo' } },
+}
+
+const account: ResolvedAccountConfig = {
+  appId: '1',
+  installationId: '2',
+  privateKeyPath: '/unused.pem',
+  baseUrl: 'https://api.github.com',
+  webUrl: 'https://github.com',
+  pollIntervalMs: 120_000,
+  repositories: ['owner/repo'],
+  provider: 'deepseek',
+  model: 'deepseek-chat',
+  review: { maxToolCalls: 30, toolTimeoutMs: 5000, toolResultLimit: 60000, timeoutMs: 30_000, defaultInstructions: '' },
+  mcp: { command: 'github-mcp-server', args: ['stdio'], env: {}, cwd: '' },
+  statePath: '',
+}
+
+const rawTools: RawMcpTool[] = [
+  { name: 'mcp_github_pull_request_read', description: 'read', inputSchema: { type: 'object', properties: {} } },
+  { name: 'mcp_github_get_file_contents', description: 'file', inputSchema: { type: 'object', properties: {} } },
+  { name: 'mcp_github_pull_request_review_write', description: 'write', inputSchema: { type: 'object', properties: {} } },
+  { name: 'mcp_github_add_comment_to_pending_review', description: 'comment', inputSchema: { type: 'object', properties: {} } },
+]
+
+/** A scripted fake agent: followup parks the turn until the test resolves idle. */
+function fakeHandle(events: Array<Record<string, unknown>>) {
+  const followupMessages: Array<{ content: Array<{ type: string; text?: string }> }> = []
+  let resolveIdle: (() => void) | undefined
+  const idle = new Promise<void>(resolve => { resolveIdle = resolve })
+  const agent = {
+    id: 'id',
+    options: {},
+    session: {
+      get seq() {
+        return events.length
+      },
+      events: events as unknown as readonly SessionEvent[],
+    },
+    inbox: {},
+    status: 'idle',
+    ctx: {},
+    cancel: vi.fn(),
+    whenIdle: vi.fn(() => idle),
+    followup: vi.fn((message: { content: Array<{ type: string; text?: string }> }) => {
+      followupMessages.push(message)
+    }),
+    steer: vi.fn(),
+    inject: vi.fn(),
+    send: vi.fn(),
+    runMaintenance: vi.fn(),
+  }
+  const handle: AgentHandle & { agent: typeof agent } = {
+    agent: agent as never,
+    dispose: vi.fn(async () => {}),
+  }
+  return {
+    handle,
+    agent,
+    followupMessages,
+    /** The raw mutable event list backing `agent.session.events`. */
+    events,
+    resolveTurn(): void {
+      resolveIdle?.()
+    },
+  }
+}
+
+interface World {
+  create: ReturnType<typeof vi.fn>
+  resume: ReturnType<typeof vi.fn>
+  createOptions: unknown[]
+  resumeOptions: unknown[]
+  sections: Array<{ name: string; order: number; complete?: boolean; text: string | ((context: unknown) => string) }>
+  registeredTools: ToolDefinition[]
+  fakeHandle: ReturnType<typeof fakeHandle>
+  applySetup(): void
+  handles: Array<AgentHandle & { agent: never }>
+}
+
+function makeWorld(): World {
+  const sections: World['sections'] = []
+  const registeredTools: ToolDefinition[] = []
+  const handles: World['handles'] = []
+  const createOptions: unknown[] = []
+  const resumeOptions: unknown[] = []
+  const fake = fakeHandle([])
+  const fakeCtx = {
+    systemPrompt: { section: (section: World['sections'][number]) => { sections.push(section) } },
+    tools: { register: (definition: ToolDefinition) => { registeredTools.push(definition); return () => {} } },
+  } as unknown as Context
+  const create = vi.fn(async (options: { setup?: (ctx: Context) => void }) => {
+    createOptions.push(options)
+    options.setup?.(fakeCtx)
+    handles.push(fake.handle as never)
+    return fake.handle
+  })
+  const resume = vi.fn(async (options: { setup?: (ctx: Context) => void }) => {
+    resumeOptions.push(options)
+    options.setup?.(fakeCtx)
+    handles.push(fake.handle as never)
+    return fake.handle
+  })
+  return {
+    create,
+    resume,
+    createOptions,
+    resumeOptions,
+    sections,
+    registeredTools,
+    fakeHandle: fake,
+    applySetup: () => {},
+    handles,
+  }
+}
+
+function makeRunner(world: World, sessionPersistence?: { listSnapshots: () => Promise<Array<{ header: { id: string } }>> }) {
+  const hosts: Array<{ token: string; closed: boolean }> = []
+  const runner = new AgentRunner({
+    accountName: 'reviewer',
+    account,
+    agents: {
+      create: world.create,
+      resume: world.resume,
+    } as unknown as AgentRegistry,
+    sessions: { flush: vi.fn(async () => true) } as unknown as SessionStore,
+    ...sessionPersistence === undefined ? {} : { sessionPersistence: sessionPersistence as never },
+    tokenSource: { token: async () => 'tok' },
+    logger: silentLogger(),
+    hostFactory: async (token) => {
+      const record = { token, closed: false }
+      hosts.push(record)
+      return {
+        listTools: async () => rawTools,
+        call: async (_remote, args) => ({ content: JSON.stringify(args), isError: false }),
+        close: async () => { record.closed = true },
+      } satisfies McpHost
+    },
+  })
+  return { runner, hosts }
+}
+
+describe('AgentRunner agent lifecycle', () => {
+  it('creates one agent per PR and reuses it across review and chat turns', async () => {
+    const world = makeWorld()
+    const { runner } = makeRunner(world)
+    const signal = new AbortController().signal
+
+    const reviewPromise = runner.driveReview(pr, { text: 'trusted', source: 'x' }, signal)
+    world.fakeHandle.resolveTurn()
+    await reviewPromise
+
+    const chatPromise = runner.driveChat(pr, 'what changed?', signal)
+    world.fakeHandle.resolveTurn()
+    await chatPromise
+
+    expect(world.create).toHaveBeenCalledTimes(1)
+    expect(world.resume).not.toHaveBeenCalled()
+    expect(world.fakeHandle.agent.followup).toHaveBeenCalledTimes(2)
+    expect((world.createOptions[0] as { sessionId: string }).sessionId).toBe('github:reviewer:owner:repo:pr:42')
+    expect((world.createOptions[0] as { agentOptions: unknown }).agentOptions).toEqual({ provider: 'deepseek', model: 'deepseek-chat' })
+    await runner.dispose()
+    expect(world.fakeHandle.handle.dispose).toHaveBeenCalledTimes(1)
+  })
+
+  it('resumes a persisted PR session instead of creating a fresh one', async () => {
+    const world = makeWorld()
+    const sessionId = 'github:reviewer:owner:repo:pr:42'
+    const persistence = { listSnapshots: vi.fn(async () => [{ header: { id: sessionId } }]) }
+    const { runner } = makeRunner(world, persistence)
+    const signal = new AbortController().signal
+
+    const promise = runner.driveReview(pr, { text: 'trusted', source: 'x' }, signal)
+    world.fakeHandle.resolveTurn()
+    await promise
+
+    expect(world.resume).toHaveBeenCalledTimes(1)
+    expect(world.create).not.toHaveBeenCalled()
+    expect((world.resumeOptions[0] as { resumeSessionId: string }).resumeSessionId).toBe(sessionId)
+    await runner.dispose()
+  })
+
+  it('creates when persistence knows no such session', async () => {
+    const world = makeWorld()
+    const persistence = { listSnapshots: vi.fn(async () => [{ header: { id: 'github:reviewer:other:pr:1' } }]) }
+    const { runner } = makeRunner(world, persistence)
+    const signal = new AbortController().signal
+
+    const promise = runner.driveReview(pr, { text: 'trusted', source: 'x' }, signal)
+    world.fakeHandle.resolveTurn()
+    await promise
+
+    expect(world.create).toHaveBeenCalledTimes(1)
+    expect(world.resume).not.toHaveBeenCalled()
+    await runner.dispose()
+  })
+})
+
+describe('AgentRunner setup world', () => {
+  it('registers a complete system-prompt section and the four guarded tools', async () => {
+    const world = makeWorld()
+    const { runner } = makeRunner(world)
+    const signal = new AbortController().signal
+
+    const promise = runner.driveReview(pr, { text: 'trusted', source: 'x' }, signal)
+    world.fakeHandle.resolveTurn()
+    await promise
+
+    expect(world.sections).toHaveLength(1)
+    expect(world.sections[0]).toMatchObject({ name: 'github-reviewer', order: -100, complete: true })
+    expect(world.registeredTools.map(tool => tool.name)).toEqual([
+      'mcp_github_pull_request_read',
+      'mcp_github_get_file_contents',
+      'mcp_github_pull_request_review_write',
+      'mcp_github_add_comment_to_pending_review',
+    ])
+    await runner.dispose()
+  })
+
+  it('switches the section text between the review and chat prompts by turn flow', async () => {
+    const world = makeWorld()
+    const { runner } = makeRunner(world)
+    const signal = new AbortController().signal
+
+    const promise = runner.driveReview(pr, { text: 'trusted', source: 'x' }, signal)
+    world.fakeHandle.resolveTurn()
+    await promise
+
+    const text = world.sections[0].text
+    expect(typeof text).toBe('function')
+    const provider = text as () => string
+
+    runner.slot.current = {
+      pr,
+      flow: 'review',
+      state: { submittedComment: false, writeAttempted: false, pendingReviewCreated: false, inlineCommentsAttempted: 0, inlineCommentsAdded: 0, submitAttempted: false, toolCallsExecuted: 0 },
+      instructions: { text: 'Check security first.', source: 'x' },
+      host: {} as McpHost,
+    }
+    expect(provider()).toContain('Check security first.')
+
+    runner.slot.current = { ...runner.slot.current, flow: 'chat', instructions: undefined }
+    expect(provider()).toContain('responding to a comment on GitHub pull request')
+
+    runner.slot.current = undefined
+    expect(provider()).toBe('')
+    await runner.dispose()
+  })
+})
+
+describe('AgentRunner turn outcomes', () => {
+  it('reports the guard submission state and the summarized assistant text, then clears the slot', async () => {
+    const world = makeWorld()
+    const { runner, hosts } = makeRunner(world)
+    const signal = new AbortController().signal
+
+    const promise = runner.driveReview(pr, { text: 'trusted', source: 'x' }, signal)
+    // Wait until the turn preamble finished and the slot is armed.
+    await vi.waitFor(() => expect(runner.slot.current).toBeDefined())
+    // The turn is parked at whenIdle: simulate the guarded tools and the log.
+    runner.slot.current!.state.submittedComment = true
+    world.fakeHandle.events.push(
+      { seq: 1, type: 'turn/start', data: {} },
+      { seq: 2, type: 'assistant/message', data: { message: { role: 'assistant', content: [{ type: 'text', text: 'Reviewed.' }] } } },
+    )
+    world.fakeHandle.resolveTurn()
+    const outcome = await promise
+
+    expect(outcome).toEqual({ submitted: true, text: 'Reviewed.' })
+    expect(runner.slot.current).toBeUndefined()
+    expect(hosts[hosts.length - 1].closed).toBe(true)
+    await runner.dispose()
+  })
+
+  it('returns the chat reply text for /bot turns', async () => {
+    const world = makeWorld()
+    const { runner } = makeRunner(world)
+    const signal = new AbortController().signal
+
+    const promise = runner.driveChat(pr, 'what changed?', signal)
+    await vi.waitFor(() => expect(runner.slot.current).toBeDefined())
+    world.fakeHandle.events.push(
+      { seq: 1, type: 'turn/start', data: {} },
+      { seq: 2, type: 'assistant/message', data: { message: { role: 'assistant', content: [{ type: 'text', text: 'The login flow.' }] } } },
+    )
+    world.fakeHandle.resolveTurn()
+    expect(await promise).toBe('The login flow.')
+    await runner.dispose()
+  })
+
+  it('stays unsubmitted when the turn produced no COMMENT submit', async () => {
+    const world = makeWorld()
+    const { runner } = makeRunner(world)
+    const signal = new AbortController().signal
+
+    const promise = runner.driveReview(pr, { text: 'trusted', source: 'x' }, signal)
+    world.fakeHandle.resolveTurn()
+    const outcome = await promise
+    expect(outcome.submitted).toBe(false)
+    await runner.dispose()
+  })
+
+  it('injects the installation token into the per-turn MCP host', async () => {
+    const world = makeWorld()
+    const { runner, hosts } = makeRunner(world)
+    const signal = new AbortController().signal
+
+    const promise = runner.driveReview(pr, { text: 'trusted', source: 'x' }, signal)
+    world.fakeHandle.resolveTurn()
+    await promise
+
+    expect(hosts[hosts.length - 1].token).toBe('tok')
+    await runner.dispose()
+  })
+})
