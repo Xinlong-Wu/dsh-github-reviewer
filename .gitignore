@@ -1,0 +1,8 @@
+node_modules/
+lib/
+*.tsbuildinfo
+.dsh-github-reviewer/
+coverage/
+.env
+.npm-cache/
+.npm-logs/
