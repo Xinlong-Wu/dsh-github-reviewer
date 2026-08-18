@@ -186,55 +186,62 @@ function validateFileContentsArgs(args: Record<string, unknown>, pr: PullRequest
     return
   }
   args.sha = pr.head.sha
-  delete args.ref
+  args.ref = undefined
 }
 
-function keepReviewCreateArgs(args: Record<string, unknown>): number {
-  let dropped = 0
+/** The keys a pending-review `create` call may carry after normalization. */
+const REVIEW_CREATE_ALLOWED_KEYS = new Set(['owner', 'repo', 'pullNumber', 'method', 'commitID'])
+
+/**
+ * Normalize a pending-review `create` call: drop `event`/`body` and every
+ * other key the workflow forbids, and return the cleaned payload.
+ * @param args - validated raw arguments.
+ * @param pr - the PR under review.
+ * @param logger - guard diagnostics observer.
+ * @returns the sanitized create payload.
+ */
+function normalizeReviewCreateArgs(args: Record<string, unknown>, pr: PullRequest, logger: GuardLogger): Record<string, unknown> {
+  const hadEvent = args.event !== undefined
+  const body = stringArg(args, 'body')
+  const hadRawBody = args.body !== undefined
+  const bodyChars = reviewLogTextChars(body.value)
+
+  const cleaned: Record<string, unknown> = {}
   for (const key of Object.keys(args)) {
-    if (key === 'owner' || key === 'repo' || key === 'pullNumber' || key === 'method' || key === 'commitID') continue
-    delete args[key]
-    dropped++
+    if (REVIEW_CREATE_ALLOWED_KEYS.has(key)) cleaned[key] = args[key]
   }
-  return dropped
+
+  const expectedCommitID = pr.head.sha.trim()
+  const commitID = stringArg(cleaned, 'commitID')
+  if (commitID.ok && commitID.value.trim() !== expectedCommitID) {
+    throw new Error('pull_request_review_write commitID must be current PR head SHA')
+  }
+  const injectedCommitID = !commitID.ok
+  if (injectedCommitID) cleaned.commitID = expectedCommitID
+  const droppedExtraArgs = Object.keys(args).length - Object.keys(cleaned).length
+  if (hadEvent || hadRawBody || injectedCommitID || droppedExtraArgs > 0) {
+    logger.warn(
+      `normalized create review repo=${fullName(pr.base.repo)} number=${pr.number} head=${shortSHA(pr.head.sha)}`
+      + ` dropped_event=${hadEvent} dropped_body=${hadRawBody} dropped_extra_args=${droppedExtraArgs}`
+      + ` injected_commit_id=${injectedCommitID} body_chars=${bodyChars}`,
+    )
+  }
+  return cleaned
 }
 
-function validateReviewWriteArgs(args: Record<string, unknown>, pr: PullRequest, logger: GuardLogger): void {
+function validateReviewWriteArgs(args: Record<string, unknown>, pr: PullRequest, logger: GuardLogger): Record<string, unknown> {
   validateBasePRArgs(args, pr)
   const method = stringArg(args, 'method')
   if (!method.ok) throw new Error('method is required')
   switch (method.value) {
-    case 'create': {
-      const hadEvent = args.event !== undefined
-      const body = stringArg(args, 'body')
-      const hadRawBody = args.body !== undefined
-      const bodyChars = reviewLogTextChars(body.value)
-      delete args.event
-      delete args.body
-
-      const expectedCommitID = pr.head.sha.trim()
-      const commitID = stringArg(args, 'commitID')
-      if (commitID.ok && commitID.value.trim() !== expectedCommitID) {
-        throw new Error('pull_request_review_write commitID must be current PR head SHA')
-      }
-      const injectedCommitID = !commitID.ok
-      if (injectedCommitID) args.commitID = expectedCommitID
-      const droppedExtraArgs = keepReviewCreateArgs(args)
-      if (hadEvent || hadRawBody || injectedCommitID || droppedExtraArgs > 0) {
-        logger.warn(
-          `normalized create review repo=${fullName(pr.base.repo)} number=${pr.number} head=${shortSHA(pr.head.sha)}`
-          + ` dropped_event=${hadEvent} dropped_body=${hadRawBody} dropped_extra_args=${droppedExtraArgs}`
-          + ` injected_commit_id=${injectedCommitID} body_chars=${bodyChars}`,
-        )
-      }
-      return
-    }
+    case 'create':
+      return normalizeReviewCreateArgs(args, pr, logger)
     case 'submit_pending': {
       const event = stringArg(args, 'event')
       if (!event.ok || event.value !== 'COMMENT') {
         throw new Error('pull_request_review_write submit_pending is only allowed with event=COMMENT')
       }
-      return
+      return args
     }
     default:
       throw new Error(`pull_request_review_write method "${method.value}" is not allowed`)
@@ -386,15 +393,15 @@ function buildGuardedTool(
       const turn = slot.current
       if (turn === undefined) throw new Error('github reviewer turn is not active')
       const parsed = (typeof args === 'object' && args !== null ? args : {}) as Record<string, unknown>
-      validateAndMutate(remote, parsed, turn.pr, logger)
+      const sanitized = validateAndMutate(remote, parsed, turn.pr, logger)
       if (turn.state.toolCallsExecuted >= limits.maxToolCalls) {
         throw new Error(`github review hit the max_tool_calls limit (${limits.maxToolCalls})`)
       }
       turn.state.toolCallsExecuted++
-      recordWriteAttempt(remote, parsed, turn.state)
+      recordWriteAttempt(remote, sanitized, turn.state)
       const callSignal = AbortSignal.any([exec.signal, AbortSignal.timeout(limits.toolTimeoutMs)])
-      const result = await turn.host.call(remote, parsed, callSignal)
-      recordWriteResult(remote, parsed, result, turn, logger)
+      const result = await turn.host.call(remote, sanitized, callSignal)
+      recordWriteResult(remote, sanitized, result, turn, logger)
       if (result.isError) throw new Error(result.content)
       return { content: [{ type: 'text', text: result.content }] }
     },
@@ -402,21 +409,20 @@ function buildGuardedTool(
   return definition
 }
 
-function validateAndMutate(remote: string, args: Record<string, unknown>, pr: PullRequest, logger: GuardLogger): void {
+function validateAndMutate(remote: string, args: Record<string, unknown>, pr: PullRequest, logger: GuardLogger): Record<string, unknown> {
   switch (remote) {
     case 'pull_request_read':
       validatePullRequestReadArgs(args, pr)
-      return
+      return args
     case 'get_file_contents':
       validateFileContentsArgs(args, pr)
-      return
+      return args
     case 'pull_request_review_write':
-      validateReviewWriteArgs(args, pr, logger)
-      return
+      return validateReviewWriteArgs(args, pr, logger)
     case 'add_comment_to_pending_review':
       validateBasePRArgs(args, pr)
       validateReviewCommentArgs(args)
-      return
+      return args
     default:
       throw new Error(`github mcp tool "${remote}" is not allowed for automated PR review`)
   }

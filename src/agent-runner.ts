@@ -241,7 +241,6 @@ export class AgentRunner {
       { command: account.mcp.command, args: account.mcp.args, env, cwd: account.mcp.cwd },
       account.review.toolTimeoutMs,
       account.review.toolResultLimit,
-      signal,
     )
   }
 

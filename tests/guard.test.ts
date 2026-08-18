@@ -199,7 +199,7 @@ describe('pull_request_review_write guard', () => {
   })
 
   it('enforces the maxToolCalls budget across all tools', async () => {
-    const { definitions, exec } = setup([tool('pull_request_read')])
+    const { exec } = setup([tool('pull_request_read')])
     const strict = buildGuardedToolDefinitions([tool('pull_request_read')], pr, {
       current: {
         pr,
