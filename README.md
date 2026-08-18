@@ -1,5 +1,7 @@
 # dsh-github-reviewer
 
+English | [中文](README.zh.md)
+
 A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) plugin that polls configured GitHub repositories for open pull requests and posts automated `COMMENT` reviews. It is a TypeScript port of the GitHub reviewer built into [LingoBridge](https://github.com/Xinlong-Wu/LingoBridge), and it drives every review and `/bot` chat through the **harness agent loop**: one live Agent per PR, one session log per PR, durable through the harness session-persistence seam.
 
 ## Features
