@@ -160,6 +160,24 @@ describe('pull_request_review_write guard', () => {
     expect(calls[0].args).toEqual({ owner: 'owner', repo: 'repo', pullNumber: 42, method: 'create', commitID: 'head-sha' })
   })
 
+  it('accepts the exact head SHA as commitID on create', async () => {
+    const { definitions, calls, exec } = setup([tool('pull_request_review_write')])
+    await execute(definitions, 'mcp_github_pull_request_review_write', { owner: 'owner', repo: 'repo', pullNumber: 42, method: 'create', commitID: 'head-sha' }, exec)
+    expect(calls[0].args.commitID).toBe('head-sha')
+  })
+
+  it('rejects a wrong commitID on create', async () => {
+    const { definitions, exec } = setup([tool('pull_request_review_write')])
+    await expect(execute(definitions, 'mcp_github_pull_request_review_write', { owner: 'owner', repo: 'repo', pullNumber: 42, method: 'create', commitID: 'other' }, exec))
+      .rejects.toThrow('commitID must be current PR head SHA')
+  })
+
+  it('rejects unknown review write methods', async () => {
+    const { definitions, exec } = setup([tool('pull_request_review_write')])
+    await expect(execute(definitions, 'mcp_github_pull_request_review_write', { owner: 'owner', repo: 'repo', pullNumber: 42, method: 'dismiss' }, exec))
+      .rejects.toThrow('is not allowed')
+  })
+
   it('rejects submit_pending without event=COMMENT', async () => {
     const { definitions, exec } = setup([tool('pull_request_review_write')])
     await expect(execute(definitions, 'mcp_github_pull_request_review_write', { owner: 'owner', repo: 'repo', pullNumber: 42, method: 'submit_pending', event: 'APPROVE' }, exec))

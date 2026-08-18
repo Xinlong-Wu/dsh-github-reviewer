@@ -21,6 +21,7 @@ rl.on('line', (line) => {
     result = { tools: [
       { name: 'pull_request_read', description: 'read a PR', inputSchema: { type: 'object', properties: { method: { type: 'string' } } } },
       { name: 'get_file_contents', description: 'read a file', inputSchema: { type: 'object', properties: { path: { type: 'string' } } } },
+      { name: 'no_desc', inputSchema: { type: 'object', properties: {} } },
     ] };
   } else if (msg.method === 'tools/call') {
     const params = msg.params || {};
@@ -53,12 +54,43 @@ describe('StdioMcpHost against a real MCP server process', () => {
       expect(tools.map(tool => tool.name)).toEqual([
         'mcp_github_pull_request_read',
         'mcp_github_get_file_contents',
+        'mcp_github_no_desc',
       ])
       expect(tools[0].inputSchema.properties).toBeDefined()
+      // A tool without a description gets the empty string; its schema stays.
+      expect(tools[2].description).toBe('')
+      expect(tools[2].inputSchema.properties).toEqual({})
 
       const outcome = await host.call('pull_request_read', { method: 'get' }, signal)
       expect(outcome.isError).toBe(false)
       expect(outcome.content).toBe('ok:{"method":"get"}')
+    } finally {
+      await host.close()
+    }
+  })
+
+  it('is idempotent on close', async () => {
+    const host = await StdioMcpHost.connect(
+      { command: process.execPath, args: ['-e', STUB_SERVER], env: {}, cwd: '' },
+      5000,
+      60000,
+      signal,
+    )
+    await host.close()
+    await host.close()
+  })
+
+  it('propagates an aborted call signal', async () => {
+    const host = await StdioMcpHost.connect(
+      { command: process.execPath, args: ['-e', STUB_SERVER], env: {}, cwd: '' },
+      5000,
+      60000,
+      signal,
+    )
+    try {
+      const controller = new AbortController()
+      controller.abort()
+      await expect(host.call('pull_request_read', {}, controller.signal)).rejects.toThrow()
     } finally {
       await host.close()
     }
