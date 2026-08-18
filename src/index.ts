@@ -15,6 +15,7 @@ import { GitHubClient } from './github/client.ts'
 import { Config, normalizeAccountConfig, validateAccountRuntime } from './config.ts'
 import type { Config as PluginConfig } from './config.ts'
 import { AccountPoller, cordisLogger } from './poller.ts'
+import { JsonFileSessionStore } from './session-store.ts'
 import { JsonFileCursorStore } from './state-file.ts'
 
 export { Config }
@@ -22,6 +23,7 @@ export type { Config as GithubReviewerConfig, AccountConfig, McpConfig, Resolved
 export type { GuardedTool, GuardedToolResult, ReviewGuardState } from './github/guard.ts'
 export type { PullRequest, Repository, ReviewInstructions } from './github/model.ts'
 export type { TokenSource } from './github/auth.ts'
+export type { SessionState, StoredMessage } from './session-store.ts'
 
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'github-reviewer'
@@ -53,6 +55,11 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
       account.statePath === '' ? JsonFileCursorStore.defaultPath(accountName) : account.statePath,
     )
     await store.load()
+    const sessions = new JsonFileSessionStore(
+      account.sessionPath === '' ? JsonFileSessionStore.defaultPath(accountName) : account.sessionPath,
+      account.sessionMaxMessages,
+    )
+    await sessions.load()
 
     const logger = cordisLogger(ctx.logger)
     ctx.effect(() => {
@@ -63,6 +70,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
         client,
         tokenSource,
         store,
+        sessions,
         logger,
       })
       poller.start()

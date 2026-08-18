@@ -17,6 +17,7 @@ import { createAssistantMessage, createToolResultMessage, createUserMessage } fr
 import type { GuardedTool, GuardLogger, ReviewGuardState } from './github/guard.ts'
 import type { PullRequest } from './github/model.ts'
 import { buildChatSystemPrompt, buildReviewSystemPrompt, buildReviewUserPrompt } from './github/prompts.ts'
+import type { StoredMessage } from './session-store.ts'
 
 /** The one LLM capability this module needs: the streaming call API. */
 export interface LlmStreamer {
@@ -68,6 +69,8 @@ export interface ConversationInput {
   options: ReviewOptions
   /** Overall cancellation. */
   signal: AbortSignal
+  /** Replayed per-PR session history, in order, before the current message. */
+  history: StoredMessage[]
 }
 
 /**
@@ -107,6 +110,12 @@ async function runWithSignal(
   deadline: number,
 ): Promise<string> {
   const messages: Message[] = [
+    ...input.history.map(message => message.role === 'assistant'
+      ? createAssistantMessage({
+        source: { provider: input.provider, model: input.model },
+        content: [{ type: 'text', text: message.text }],
+      })
+      : createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: message.text }] })),
     createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: input.userText }] }),
   ]
   let executedCalls = 0
@@ -232,7 +241,8 @@ async function streamTurn(
  * @param state - shared guard state.
  * @param logger - diagnostics observer.
  * @param signal - overall cancellation.
- * @returns whether a COMMENT review was submitted.
+ * @param history - replayed per-PR session history.
+ * @returns whether a COMMENT review was submitted and the collected assistant text.
  */
 export async function runReview(
   llm: LlmStreamer,
@@ -245,8 +255,9 @@ export async function runReview(
   state: ReviewGuardState,
   logger: OrchestratorLogger,
   signal: AbortSignal,
-): Promise<boolean> {
-  await runConversation(
+  history: StoredMessage[],
+): Promise<{ submitted: boolean; text: string }> {
+  const text = await runConversation(
     llm,
     {
       provider,
@@ -256,10 +267,11 @@ export async function runReview(
       tools,
       options,
       signal,
+      history,
     },
     logger,
   )
-  return state.submittedComment
+  return { submitted: state.submittedComment, text }
 }
 
 /**
@@ -273,6 +285,7 @@ export async function runReview(
  * @param options - turn limits.
  * @param logger - diagnostics observer.
  * @param signal - overall cancellation.
+ * @param history - replayed per-PR session history.
  * @returns the reply text, or the empty string when nothing was produced.
  */
 export async function runChat(
@@ -285,6 +298,7 @@ export async function runChat(
   options: ReviewOptions,
   logger: OrchestratorLogger,
   signal: AbortSignal,
+  history: StoredMessage[],
 ): Promise<string> {
   const text = await runConversation(
     llm,
@@ -296,6 +310,7 @@ export async function runChat(
       tools,
       options,
       signal,
+      history,
     },
     logger,
   )

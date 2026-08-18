@@ -12,6 +12,7 @@ A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) plugin tha
 - Wraps the MCP tools with PR-review guards: every call must target the current PR, reads are limited to allowed methods and refs, and writes are limited to the `create` → inline comments → `submit_pending(event=COMMENT)` pending-review workflow.
 - Drives the review conversation through the harness `llm` service with a dedicated review system prompt and trust boundary; tool results are bounded, each tool call has a timeout, and the whole conversation has an overall deadline and tool-call budget.
 - Handles comment commands on already-processed PRs: `/review` triggers a re-review, `/bot <message>` continues the PR conversation and posts the reply to the issue thread or the review thread it answered.
+- Keeps **one session per PR**: reviews and `/bot` chats on the same PR share a persistent conversation history (keyed by base repo + PR number), so later interactions replay what happened before — the LingoBridge per-PR session behavior.
 - Sanitizes untrusted PR title/body text before prompt placement (HTML comments/hidden attributes, invisible/control characters, markdown image alt text, markdown link titles, GitHub token-like strings).
 
 ## Install
@@ -59,6 +60,8 @@ plugins:
             env: {}                              # optional; GitHub tokens are injected automatically
             cwd: ''                              # optional
           statePath: ''                          # optional; defaults to ./.dsh-github-reviewer/<account>.json
+          sessionPath: ''                        # optional; defaults to ./.dsh-github-reviewer/<account>.sessions.json
+          sessionMaxMessages: 60                 # optional; bound on each PR's stored history
 ```
 
 Multiple accounts run independent poll loops. See [cordis.yml.example](./cordis.yml.example) for the full example.
@@ -86,6 +89,8 @@ Multiple accounts run independent poll loops. See [cordis.yml.example](./cordis.
 | `accounts.<name>.mcp.env` | `{}` | Extra MCP server environment variables; GitHub tokens are injected automatically |
 | `accounts.<name>.mcp.cwd` | — | Optional working directory for the server |
 | `accounts.<name>.statePath` | `./.dsh-github-reviewer/<name>.json` | Cursor state file path |
+| `accounts.<name>.sessionPath` | `./.dsh-github-reviewer/<name>.sessions.json` | Per-PR session history file path |
+| `accounts.<name>.sessionMaxMessages` | `60` | Maximum stored messages per PR session; the oldest messages are dropped |
 
 Misconfiguration fails the plugin at load: missing credentials, invalid repository names, unreadable private keys, and missing MCP command/args all throw during activation instead of silently skipping reviews.
 
@@ -121,9 +126,18 @@ Approvals, request-changes reviews, thread resolution, PR updates, merges, and r
 
 The review system prompt carries trusted instructions only from the base-repo file or the configured default. PR metadata, title/body, diffs, changed files, and tool output are untrusted context; the title/body is sanitized before prompt placement, and the prompt instructs the model not to follow instructions found in untrusted context.
 
+### Per-PR sessions
+
+Every PR has one conversation session keyed by base repo + PR number, shared by automated reviews and `/bot` chats — matching LingoBridge's per-PR session keying. Each completed interaction appends its model-visible text to the PR's history, and the next interaction replays that history before the current message, so the bot remembers its earlier review findings and the discussion so far.
+
+- Only user prompts, human comments, and assistant replies are stored. Tool calls and tool results are transient scratch and never persisted or replayed.
+- History is bounded to `sessionMaxMessages` per PR; the oldest messages are dropped.
+- The session file persists across restarts (same default directory as the cursor state).
+- History is recorded only after the interaction lands: a review records its prompt and final text when the conversation completes, and a chat records the exchange only after the reply is posted.
+
 ### Model conversation
 
-Review conversations are one-shot calls through the harness `llm` service (`provider` + `model` per account); they do not create session-log records. Tool results are truncated to `toolResultLimit` characters, each tool call is bounded by `toolTimeoutMs`, the conversation by `timeoutMs` and `maxToolCalls`.
+Review conversations are one-shot calls through the harness `llm` service (`provider` + `model` per account) with the per-PR session history replayed in front; they do not create session-log records. Tool results are truncated to `toolResultLimit` characters, each tool call is bounded by `toolTimeoutMs`, the conversation by `timeoutMs` and `maxToolCalls`.
 
 ## Development
 
@@ -136,7 +150,7 @@ npm run build
 
 ## Known Limitations and Deferred Work
 
-- The cursor file is local to the process host; running two hosts against the same account would poll twice (LingoBridge keeps cursors in its per-account store).
-- Review conversations bypass the harness session log, so they are not replayable or inspectable in session UIs.
+- The cursor and session files are local to the process host; running two hosts against the same account would poll twice and fork the per-PR histories (LingoBridge keeps both in its per-account store).
+- Review and chat conversations bypass the harness session log, so they are not replayable or inspectable in session UIs; the per-PR history the bot replays lives in the plugin's session file.
 - GitHub API rate limits are surfaced as errors and the poll continues on the next tick; there is no backoff beyond the poll interval.
 - Comment polling uses the cursor timestamps as the `since` bound, so comments deleted before the next poll are not seen.

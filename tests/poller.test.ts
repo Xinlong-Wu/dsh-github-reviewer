@@ -9,6 +9,7 @@ import type { GitHubClient } from '../src/github/client.ts'
 import type { PullRequest } from '../src/github/model.ts'
 import type { McpHost } from '../src/github/mcp-host.ts'
 import { AccountPoller, recordingLogger } from '../src/poller.ts'
+import { JsonFileSessionStore } from '../src/session-store.ts'
 import { JsonFileCursorStore } from '../src/state-file.ts'
 
 const pr: PullRequest = {
@@ -34,6 +35,8 @@ const account: ResolvedAccountConfig = {
   review: { maxToolCalls: 30, toolTimeoutMs: 5000, toolResultLimit: 60000, timeoutMs: 30_000, defaultInstructions: '' },
   mcp: { command: 'github-mcp-server', args: ['stdio'], env: {}, cwd: '' },
   statePath: '',
+  sessionPath: '',
+  sessionMaxMessages: 60,
 }
 
 const signal = new AbortController().signal
@@ -103,8 +106,13 @@ function scripted(initial: StreamChunk[][], streamCalls: Array<unknown[]> = []) 
   return {
     streamCalls,
     setTurns: (next: StreamChunk[][]) => { turns = next; index = 0 },
-    stream: vi.fn((_options: unknown) => {
-      streamCalls.push([_options])
+    stream: vi.fn((options: unknown) => {
+      // Snapshot the message list: the caller appends to it after this turn.
+      const snapshot = { ...options as Record<string, unknown> }
+      if (Array.isArray((options as { messages?: unknown }).messages)) {
+        snapshot.messages = [...(options as { messages: unknown[] }).messages]
+      }
+      streamCalls.push([snapshot])
       const chunks = turns[Math.min(index, turns.length - 1)] ?? []
       index++
       return {
@@ -124,12 +132,14 @@ const submitReviewTurns: StreamChunk[][] = [
 
 let dir: string
 let store: JsonFileCursorStore
+let sessions: JsonFileSessionStore
 let mcpCalls: Array<{ remote: string; args: Record<string, unknown> }>
 let lastToken: string
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), 'dsh-github-reviewer-'))
   store = new JsonFileCursorStore(join(dir, 'cursor.json'))
+  sessions = new JsonFileSessionStore(join(dir, 'sessions.json'), 60)
   mcpCalls = []
   lastToken = ''
 })
@@ -164,6 +174,7 @@ function buildPoller(
     client: c as unknown as GitHubClient,
     tokenSource: { token: async () => 'installation-token' },
     store,
+    sessions,
     logger: recordingLogger(lines),
     mcpHostFactory: async (token) => {
       lastToken = token
@@ -258,6 +269,79 @@ describe('AccountPoller review flow', () => {
 
     expect(llm.streamCalls.length).toBeGreaterThan(0)
     expect(lines.some(line => line.includes('falling back to config default_instructions'))).toBe(true)
+  })
+})
+
+describe('AccountPoller per-PR session', () => {
+  it('replays the review conversation in a later /bot chat on the same PR', async () => {
+    const c = fakeClient()
+    c.prs = [pr]
+    const llm = scripted(submitReviewTurns)
+    const lines: string[] = []
+    const poller = buildPoller(c, llm, lines, { text: 'trusted', source: 'x' })
+    await poller.pollOnce(signal)
+
+    const chatTurns: StreamChunk[][] = [[text('It changed the login flow.'), stop()]]
+    c.issueComments = [
+      { id: 9, body: '/bot what changed?', user: { login: 'alice', type: 'User' }, createdAt: new Date(), htmlUrl: 'u' },
+    ]
+    llm.setTurns(chatTurns)
+    await poller.pollOnce(signal)
+    poller.dispose()
+
+    // The chat call is the fourth stream call; its messages replay the session.
+    const chatOptions = llm.streamCalls[3][0] as { messages: Array<{ role: string; content: Array<{ type: string; text?: string }> }> }
+    expect(chatOptions.messages).toHaveLength(3)
+    expect(chatOptions.messages[0].role).toBe('user')
+    expect(chatOptions.messages[0].content[0].text).toContain('<pull_request>')
+    expect(chatOptions.messages[1].role).toBe('assistant')
+    expect(chatOptions.messages[1].content[0].text).toBe('Reviewed.')
+    expect(chatOptions.messages[2].content[0].text).toBe('what changed?')
+  })
+
+  it('persists the review and chat exchange in one per-PR session file', async () => {
+    const c = fakeClient()
+    c.prs = [pr]
+    const llm = scripted(submitReviewTurns)
+    const lines: string[] = []
+    const poller = buildPoller(c, llm, lines, { text: 'trusted', source: 'x' })
+    await poller.pollOnce(signal)
+
+    const chatTurns: StreamChunk[][] = [[text('Answer.'), stop()]]
+    c.issueComments = [
+      { id: 9, body: '/bot hi', user: { login: 'alice', type: 'User' }, createdAt: new Date(), htmlUrl: 'u' },
+    ]
+    llm.setTurns(chatTurns)
+    await poller.pollOnce(signal)
+    poller.dispose()
+
+    const body = JSON.parse(await readFile(sessions.filePath, 'utf8')) as {
+      sessions: Record<string, Array<{ role: string; text: string }>>
+    }
+    const history = body.sessions['owner/repo#42']
+    expect(history).toHaveLength(4)
+    expect(history[0]).toMatchObject({ role: 'user' })
+    expect(history[0].text).toContain('<pull_request>')
+    expect(history[1]).toEqual({ role: 'assistant', text: 'Reviewed.' })
+    expect(history[2]).toEqual({ role: 'user', text: 'hi' })
+    expect(history[3]).toEqual({ role: 'assistant', text: 'Answer.' })
+  })
+
+  it('keeps different PRs in separate sessions', async () => {
+    const c = fakeClient()
+    const otherPr: PullRequest = { ...pr, number: 43 }
+    c.prs = [pr, otherPr]
+    const llm = scripted(submitReviewTurns)
+    const lines: string[] = []
+    const poller = buildPoller(c, llm, lines, { text: 'trusted', source: 'x' })
+    await poller.pollOnce(signal)
+    poller.dispose()
+
+    const body = JSON.parse(await readFile(sessions.filePath, 'utf8')) as {
+      sessions: Record<string, Array<{ role: string; text: string }>>
+    }
+    expect(body.sessions['owner/repo#42']).toHaveLength(2)
+    expect(body.sessions['owner/repo#43']).toHaveLength(2)
   })
 })
 

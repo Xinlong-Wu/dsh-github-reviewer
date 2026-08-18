@@ -51,6 +51,24 @@ function scriptedStreamer(turns: StreamChunk[][]): LlmStreamer {
   }
 }
 
+/** A streamer that records every GenerateOptions it receives. */
+function recordingStreamer(turns: StreamChunk[][], seen: GenerateOptions[]): LlmStreamer {
+  let index = 0
+  return {
+    stream: (options: GenerateOptions): AsyncIterable<StreamChunk> => {
+      // Snapshot the message list: the caller appends to it after this turn.
+      seen.push({ ...options, messages: [...options.messages] })
+      const chunks = turns[Math.min(index, turns.length - 1)] ?? []
+      index++
+      return {
+        async *[Symbol.asyncIterator]() {
+          for (const chunk of chunks) yield chunk
+        },
+      }
+    },
+  }
+}
+
 const text = (value: string): StreamChunk => ({ type: 'block-end', index: 0, block: { type: 'text', text: value } })
 const toolCall = (id: string, name: string, args: string): StreamChunk => ({
   type: 'block-end',
@@ -65,11 +83,12 @@ describe('runReview', () => {
     const llm = scriptedStreamer([[text('No actionable issues found.'), stop()]])
     const state = new ReviewGuardState()
     const tools: GuardedTool[] = []
-    const submitted = await runReview(
+    const outcome = await runReview(
       llm,
-      pr, { text: 'instructions', source: 'x' }, 'deepseek', 'deepseek-chat', tools, options, state, logger, signal,
+      pr, { text: 'instructions', source: 'x' }, 'deepseek', 'deepseek-chat', tools, options, state, logger, signal, [],
     )
-    expect(submitted).toBe(false)
+    expect(outcome.submitted).toBe(false)
+    expect(outcome.text).toBe('No actionable issues found.')
   })
 
   it('executes tool calls across turns and submits a COMMENT review', async () => {
@@ -92,13 +111,14 @@ describe('runReview', () => {
       [toolCall('c2', 'mcp_github_pull_request_review_write', JSON.stringify({ owner: 'owner', repo: 'repo', pullNumber: 42, method: 'submit_pending', event: 'COMMENT' })), moreTools()],
       [text('Done.'), stop()],
     ])
-    const submitted = await runReview(
+    const outcome = await runReview(
       llm,
-      pr, { text: 'i', source: 'x' }, 'deepseek', 'deepseek-chat', [writeTool], options, state, logger, signal,
+      pr, { text: 'i', source: 'x' }, 'deepseek', 'deepseek-chat', [writeTool], options, state, logger, signal, [],
     )
     expect(calls).toHaveLength(2)
     expect(state.submittedComment).toBe(true)
-    expect(submitted).toBe(true)
+    expect(outcome.submitted).toBe(true)
+    expect(outcome.text).toBe('Done.')
   })
 
   it('does not submit when the submit tool call fails', async () => {
@@ -108,11 +128,11 @@ describe('runReview', () => {
       [text('failed'), stop()],
     ])
     const state = new ReviewGuardState()
-    const submitted = await runReview(
+    const outcome = await runReview(
       llm,
-      pr, { text: 'i', source: 'x' }, 'deepseek', 'deepseek-chat', [writeTool], options, state, logger, signal,
+      pr, { text: 'i', source: 'x' }, 'deepseek', 'deepseek-chat', [writeTool], options, state, logger, signal, [],
     )
-    expect(submitted).toBe(false)
+    expect(outcome.submitted).toBe(false)
   })
 
   it('stops executing tools at maxToolCalls', async () => {
@@ -125,7 +145,7 @@ describe('runReview', () => {
     const state = new ReviewGuardState()
     await runReview(
       llm,
-      pr, { text: 'i', source: 'x' }, 'deepseek', 'deepseek-chat', [tool], limited, state, logger, signal,
+      pr, { text: 'i', source: 'x' }, 'deepseek', 'deepseek-chat', [tool], limited, state, logger, signal, [],
     )
     expect(tool.calls).toHaveLength(1)
   })
@@ -139,9 +159,31 @@ describe('runReview', () => {
     const state = new ReviewGuardState()
     await runReview(
       llm,
-      pr, { text: 'i', source: 'x' }, 'deepseek', 'deepseek-chat', [tool], options, state, logger, signal,
+      pr, { text: 'i', source: 'x' }, 'deepseek', 'deepseek-chat', [tool], options, state, logger, signal, [],
     )
     expect(tool.calls).toHaveLength(1)
+  })
+
+  it('replays session history before the current message', async () => {
+    const seen: GenerateOptions[] = []
+    const llm = recordingStreamer([[stop()]], seen)
+    const state = new ReviewGuardState()
+    await runReview(
+      llm,
+      pr, { text: 'i', source: 'x' }, 'deepseek', 'deepseek-chat', [], options, state, logger, signal,
+      [
+        { role: 'user', text: 'earlier review request' },
+        { role: 'assistant', text: 'earlier review reply' },
+      ],
+    )
+    expect(seen).toHaveLength(1)
+    const messages = seen[0].messages
+    expect(messages).toHaveLength(3)
+    expect(messages[0].role).toBe('user')
+    expect(messages[0].content).toEqual([{ type: 'text', text: 'earlier review request' }])
+    expect(messages[1].role).toBe('assistant')
+    expect(messages[1].content).toEqual([{ type: 'text', text: 'earlier review reply' }])
+    expect(messages[2].role).toBe('user')
   })
 })
 
@@ -151,9 +193,22 @@ describe('runChat', () => {
     const state = new ReviewGuardState()
     const reply = await runChat(
       llm,
-      pr, 'what changed?', 'deepseek', 'deepseek-chat', [], options, logger, signal,
+      pr, 'what changed?', 'deepseek', 'deepseek-chat', [], options, logger, signal, [],
     )
     expect(reply).toBe('here is the answer')
+  })
+
+  it('replays session history for chat turns too', async () => {
+    const seen: GenerateOptions[] = []
+    const llm = recordingStreamer([[text('answer'), stop()]], seen)
+    const state = new ReviewGuardState()
+    await runChat(
+      llm,
+      pr, 'what changed?', 'deepseek', 'deepseek-chat', [], options, logger, signal,
+      [{ role: 'assistant', text: 'previous review text' }],
+    )
+    expect(seen[0].messages).toHaveLength(2)
+    expect(seen[0].messages[0].role).toBe('assistant')
   })
 
   it('aborts on an external cancellation signal', async () => {
@@ -165,7 +220,7 @@ describe('runChat', () => {
     const state = new ReviewGuardState()
     const reply = await runChat(
       llm,
-      pr, 'hi', 'deepseek', 'deepseek-chat', [], options, logger, controller.signal,
+      pr, 'hi', 'deepseek', 'deepseek-chat', [], options, logger, controller.signal, [],
     )
     expect(reply).toBe('')
   })
@@ -181,11 +236,11 @@ describe('stream error containment', () => {
     })
     const llm: LlmStreamer = { stream: () => failing() }
     const state = new ReviewGuardState()
-    const submitted = await runReview(
+    const outcome = await runReview(
       llm,
-      pr, { text: 'i', source: 'x' }, 'deepseek', 'deepseek-chat', [], options, state, { ...logger, error: errors }, signal,
+      pr, { text: 'i', source: 'x' }, 'deepseek', 'deepseek-chat', [], options, state, { ...logger, error: errors }, signal, [],
     )
-    expect(submitted).toBe(false)
+    expect(outcome.submitted).toBe(false)
     expect(errors).toHaveBeenCalled()
   })
 })

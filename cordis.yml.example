@@ -46,3 +46,10 @@ plugins:
           # Optional cursor state file; defaults to
           # ./.dsh-github-reviewer/<account>.json next to the process.
           statePath: ''
+          # Optional per-PR session history file; defaults to
+          # ./.dsh-github-reviewer/<account>.sessions.json. Reviews and /bot
+          # chats on the same PR share one session: later interactions replay
+          # the stored conversation.
+          sessionPath: ''
+          # Optional bound on each PR's stored history; oldest messages drop.
+          sessionMaxMessages: 60

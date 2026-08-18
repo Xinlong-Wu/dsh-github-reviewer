@@ -17,6 +17,8 @@ export const DEFAULT_TOOL_TIMEOUT_MS = 30_000
 export const DEFAULT_TOOL_RESULT_LIMIT = 60_000
 /** Overall deadline for one review conversation. */
 export const DEFAULT_REVIEW_TIMEOUT_MS = 15 * 60_000
+/** Bound on each PR's stored session history. */
+export const DEFAULT_SESSION_MAX_MESSAGES = 60
 
 /** Per-account review limits, fully resolved after normalization. */
 export interface ReviewConfig {
@@ -53,6 +55,10 @@ export interface AccountConfig {
   mcp?: McpConfig
   /** Optional cursor state file; defaults to `./.dsh-github-reviewer/<account>.json`. */
   statePath: string
+  /** Optional per-PR session file; defaults to `./.dsh-github-reviewer/<account>.sessions.json`. */
+  sessionPath: string
+  /** Maximum stored messages per PR session; older messages are dropped. */
+  sessionMaxMessages: number
 }
 
 /** One GitHub App review account with every default resolved. */
@@ -69,6 +75,8 @@ export interface ResolvedAccountConfig {
   review: ReviewConfig
   mcp: McpConfig
   statePath: string
+  sessionPath: string
+  sessionMaxMessages: number
 }
 
 /** Whole plugin configuration. */
@@ -104,6 +112,8 @@ const Account = z.object({
   review: Review,
   mcp: Mcp,
   statePath: z.string().default(''),
+  sessionPath: z.string().default(''),
+  sessionMaxMessages: z.number().min(1).default(DEFAULT_SESSION_MAX_MESSAGES),
 })
 
 /** Schemastery schema for cordis.yml loading. */
@@ -157,6 +167,8 @@ export function normalizeAccountConfig(account: AccountConfig): ResolvedAccountC
       cwd: (account.mcp?.cwd ?? '').trim(),
     },
     statePath: account.statePath.trim(),
+    sessionPath: account.sessionPath.trim(),
+    sessionMaxMessages: account.sessionMaxMessages ?? DEFAULT_SESSION_MAX_MESSAGES,
   }
 }
 

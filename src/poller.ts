@@ -25,11 +25,13 @@ import type { PullRequest, ReviewInstructions } from './github/model.ts'
 import { fullName, parseRepository, shortSHA } from './github/model.ts'
 import { StdioMcpHost } from './github/mcp-host.ts'
 import type { McpHost } from './github/mcp-host.ts'
-import { pullRequestUserKey } from './github/prompts.ts'
+import { buildReviewUserPrompt, pullRequestUserKey } from './github/prompts.ts'
 import { sanitizeReviewPromptText } from './github/sanitizer.ts'
 import { parseCommentCommand } from './github/commands.ts'
 import { runChat, runReview } from './review.ts'
 import type { LlmStreamer, OrchestratorLogger } from './review.ts'
+import { appendSessionMessage } from './session-store.ts'
+import type { JsonFileSessionStore, SessionState } from './session-store.ts'
 import type { JsonFileCursorStore } from './state-file.ts'
 
 /** Poll diagnostics observer. */
@@ -69,6 +71,7 @@ export interface AccountPollerDeps {
   client: GitHubClient
   tokenSource: TokenSource
   store: JsonFileCursorStore
+  sessions: JsonFileSessionStore
   logger: PollLogger
   /** Optional MCP host factory override, for tests. */
   mcpHostFactory?: (token: string, signal: AbortSignal) => Promise<McpHost>
@@ -125,6 +128,7 @@ export class AccountPoller {
   /** One full poll pass over every configured repository. */
   async pollOnce(signal: AbortSignal): Promise<void> {
     const state = await this.deps.store.load()
+    const sessionState = await this.deps.sessions.load()
     for (const repoName of this.deps.account.repositories) {
       if (signal.aborted) return
       const repo = parseRepository(repoName)
@@ -152,7 +156,7 @@ export class AccountPoller {
         }
         // Phase 1: new commits trigger a review.
         if (shouldProcessCursor(state, pr)) {
-          await this.processReview(state, pr, signal)
+          await this.processReview(state, sessionState, pr, signal)
           continue
         }
         // Phase 2: comment commands on already-processed PRs.
@@ -160,7 +164,7 @@ export class AccountPoller {
         if (entry === undefined) continue
         if (entry.status !== CURSOR_STATUS_REVIEWED && entry.status !== CURSOR_STATUS_MISSING_INSTRUCTIONS) continue
         try {
-          await this.pollComments(state, pr, signal)
+          await this.pollComments(state, sessionState, pr, signal)
         } catch (error) {
           this.logger.warn(`github comment poll failed repo=${fullName(pr.base.repo)} number=${pr.number}: ${String(error)}`)
         }
@@ -196,7 +200,12 @@ export class AccountPoller {
   }
 
   /** Run one review for a PR and advance the cursor when a COMMENT review lands. */
-  private async processReview(state: CursorState, pr: PullRequest, signal: AbortSignal): Promise<void> {
+  private async processReview(
+    state: CursorState,
+    sessionState: SessionState,
+    pr: PullRequest,
+    signal: AbortSignal,
+  ): Promise<void> {
     const resolved = await this.reviewInstructions(pr, signal)
     if (!resolved.ok) {
       markCursor(state, pr, CURSOR_STATUS_MISSING_INSTRUCTIONS, new Date())
@@ -204,14 +213,19 @@ export class AccountPoller {
       return
     }
     const instructions = resolved.instructions as ReviewInstructions
-    let submitted: boolean
+    let outcome: { submitted: boolean; text: string }
     try {
-      submitted = await this.runReviewOnce(pr, instructions, signal)
+      outcome = await this.runReviewOnce(pr, instructions, sessionState, signal)
     } catch (error) {
       this.logger.warn(`github review failed repo=${fullName(pr.base.repo)} number=${pr.number} head=${shortSHA(pr.head.sha)}: ${String(error)}`)
       return
     }
-    if (!submitted) {
+    if (!signal.aborted && outcome.text.trim() !== '') {
+      appendSessionMessage(sessionState, cursorKey(pr), { role: 'user', text: buildReviewUserPrompt(pr) }, this.deps.sessions.maxMessages)
+      appendSessionMessage(sessionState, cursorKey(pr), { role: 'assistant', text: outcome.text }, this.deps.sessions.maxMessages)
+      await this.deps.sessions.save(sessionState)
+    }
+    if (!outcome.submitted) {
       this.logger.warn(`github review completed without COMMENT submission repo=${fullName(pr.base.repo)} number=${pr.number} head=${shortSHA(pr.head.sha)}`)
       return
     }
@@ -221,7 +235,12 @@ export class AccountPoller {
   }
 
   /** Spawn the per-review MCP host and drive one review conversation. */
-  private async runReviewOnce(pr: PullRequest, instructions: ReviewInstructions, signal: AbortSignal): Promise<boolean> {
+  private async runReviewOnce(
+    pr: PullRequest,
+    instructions: ReviewInstructions,
+    sessionState: SessionState,
+    signal: AbortSignal,
+  ): Promise<{ submitted: boolean; text: string }> {
     const token = await this.deps.tokenSource.token(signal)
     const host = await this.connectMcpHost(token, signal)
     try {
@@ -231,12 +250,13 @@ export class AccountPoller {
       if (tools.length === 0) {
         throw new Error('github mcp host exposed no allowed PR review tools')
       }
+      const history = sessionState.sessions[cursorKey(pr)] ?? []
       this.logger.info(
         `starting github review repo=${fullName(pr.base.repo)} number=${pr.number} head=${shortSHA(pr.head.sha)}`
-        + ` tools=${tools.length} instructions_source=${instructions.source}`,
+        + ` tools=${tools.length} instructions_source=${instructions.source} history_messages=${history.length}`,
       )
       this.logger.debug(`using shared github pr session repo=${fullName(pr.base.repo)} number=${pr.number} flow=review session_key=${pullRequestUserKey(pr)}`)
-      const submitted = await runReview(
+      const outcome = await runReview(
         this.deps.llm,
         pr,
         instructions,
@@ -247,14 +267,15 @@ export class AccountPoller {
         state,
         this.logger,
         signal,
+        history,
       )
       this.logger.debug(
         `github review handler finished repo=${fullName(pr.base.repo)} number=${pr.number} head=${shortSHA(pr.head.sha)}`
-        + ` pending_created=${state.pendingReviewCreated} comment_attempted=${state.inlineCommentsAttempted}`
+        + ` text_len=${outcome.text.length} pending_created=${state.pendingReviewCreated} comment_attempted=${state.inlineCommentsAttempted}`
         + ` comment_added=${state.inlineCommentsAdded} submit_attempted=${state.submitAttempted}`
         + ` submitted=${state.submittedComment} write_attempted=${state.writeAttempted}`,
       )
-      return submitted
+      return outcome
     } finally {
       await host.close()
     }
@@ -277,7 +298,12 @@ export class AccountPoller {
   }
 
   /** Poll issue and review comments for bot commands since the last check. */
-  private async pollComments(state: CursorState, pr: PullRequest, signal: AbortSignal): Promise<void> {
+  private async pollComments(
+    state: CursorState,
+    sessionState: SessionState,
+    pr: PullRequest,
+    signal: AbortSignal,
+  ): Promise<void> {
     const entry = state.prs[cursorKey(pr)]
     const since = commentCheckSince(entry)
 
@@ -329,14 +355,19 @@ export class AccountPoller {
             await this.deps.store.save(state)
             return
           }
-          let submitted: boolean
+          let outcome: { submitted: boolean; text: string }
           try {
-            submitted = await this.runReviewOnce(pr, resolved.instructions as ReviewInstructions, signal)
+            outcome = await this.runReviewOnce(pr, resolved.instructions as ReviewInstructions, sessionState, signal)
           } catch (error) {
             this.logger.warn(`github re-review failed repo=${fullName(pr.base.repo)} number=${pr.number}: ${String(error)}`)
             break
           }
-          if (submitted) {
+          if (!signal.aborted && outcome.text.trim() !== '') {
+            appendSessionMessage(sessionState, cursorKey(pr), { role: 'user', text: buildReviewUserPrompt(pr) }, this.deps.sessions.maxMessages)
+            appendSessionMessage(sessionState, cursorKey(pr), { role: 'assistant', text: outcome.text }, this.deps.sessions.maxMessages)
+            await this.deps.sessions.save(sessionState)
+          }
+          if (outcome.submitted) {
             markCursor(state, pr, CURSOR_STATUS_REVIEWED, new Date())
             await this.deps.store.save(state)
             this.logger.info(`github re-review submitted repo=${fullName(pr.base.repo)} number=${pr.number} head=${shortSHA(pr.head.sha)}`)
@@ -347,7 +378,7 @@ export class AccountPoller {
         case 'bot': {
           this.logger.info(`github bot chat triggered by comment repo=${fullName(pr.base.repo)} number=${pr.number} comment_id=${event.id} user=${event.user.login}`)
           try {
-            await this.handleBotChat(pr, command.message, event, signal)
+            await this.handleBotChat(pr, command.message, event, sessionState, signal)
           } catch (error) {
             this.logger.warn(`github bot chat failed repo=${fullName(pr.base.repo)} number=${pr.number} comment_id=${event.id}: ${String(error)}`)
           }
@@ -363,7 +394,13 @@ export class AccountPoller {
   }
 
   /** Answer one `/bot` comment and post the reply back to the right thread. */
-  private async handleBotChat(pr: PullRequest, message: string, event: CommentEvent, signal: AbortSignal): Promise<void> {
+  private async handleBotChat(
+    pr: PullRequest,
+    message: string,
+    event: CommentEvent,
+    sessionState: SessionState,
+    signal: AbortSignal,
+  ): Promise<void> {
     const token = await this.deps.tokenSource.token(signal)
     const host = await this.connectMcpHost(token, signal)
     try {
@@ -371,7 +408,8 @@ export class AccountPoller {
       const state = new ReviewGuardState()
       const tools = guardReviewTools(rawTools, pr, state, host, this.logger)
       const sanitizedMessage = sanitizeReviewPromptText(message)
-      this.logger.debug(`using shared github pr session repo=${fullName(pr.base.repo)} number=${pr.number} flow=chat session_key=${pullRequestUserKey(pr)}`)
+      const history = sessionState.sessions[cursorKey(pr)] ?? []
+      this.logger.debug(`using shared github pr session repo=${fullName(pr.base.repo)} number=${pr.number} flow=chat session_key=${pullRequestUserKey(pr)} history_messages=${history.length}`)
       const reply = await runChat(
         this.deps.llm,
         pr,
@@ -382,13 +420,18 @@ export class AccountPoller {
         this.deps.account.review,
         this.logger,
         signal,
+        history,
       )
-      if (reply === '') return
+      if (reply === '' || signal.aborted) return
       if (event.replyMode === 'review' && event.reviewCommentId > 0) {
         await this.deps.client.createReviewCommentReply(pr.base.repo, pr.number, event.reviewCommentId, reply, signal)
       } else {
         await this.deps.client.createIssueComment(pr.base.repo, pr.number, reply, signal)
       }
+      // Only the reply the author actually saw enters the session history.
+      appendSessionMessage(sessionState, cursorKey(pr), { role: 'user', text: sanitizedMessage }, this.deps.sessions.maxMessages)
+      appendSessionMessage(sessionState, cursorKey(pr), { role: 'assistant', text: reply }, this.deps.sessions.maxMessages)
+      await this.deps.sessions.save(sessionState)
     } finally {
       await host.close()
     }
