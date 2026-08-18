@@ -161,6 +161,7 @@ agent setup 在未发布的 agent 上下文上注册「评审世界」：一个 
 npm install
 npm run typecheck
 npm test
+npm run coverage
 npm run build
 ```
 

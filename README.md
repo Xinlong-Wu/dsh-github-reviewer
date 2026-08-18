@@ -161,6 +161,7 @@ The review system prompt is registered as the agent's complete system prompt and
 npm install
 npm run typecheck
 npm test
+npm run coverage
 npm run build
 ```
 

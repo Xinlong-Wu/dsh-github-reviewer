@@ -314,3 +314,90 @@ describe('AccountPoller comment commands', () => {
     expect(c.issueCommentCalls).toHaveLength(0)
   })
 })
+
+describe('AccountPoller failure paths', () => {
+  it('continues past a repo whose PR listing fails', async () => {
+    const c = fakeClient()
+    c.listOpenPullRequests = async () => { throw new Error('rate limited') }
+    const { driver, reviewCalls } = fakeDriver()
+    const lines: string[] = []
+    const poller = buildPoller(c, driver, lines, { text: 'trusted', source: 'x' })
+
+    await poller.pollOnce(signal)
+    await poller.dispose()
+
+    expect(reviewCalls).toHaveLength(0)
+    expect(lines.some(line => line.includes('list github pull requests failed'))).toBe(true)
+  })
+
+  it('marks missing instructions when reading them fails', async () => {
+    const c = fakeClient()
+    c.prs = [pr]
+    c.reviewInstructions = async () => { throw new Error('api down') }
+    const { driver, reviewCalls } = fakeDriver()
+    const lines: string[] = []
+    const poller = buildPoller(c, driver, lines)
+
+    await poller.pollOnce(signal)
+    const state = await store.load()
+    expect(state.prs['owner/repo#42'].status).toBe('missing_instructions')
+    expect(reviewCalls).toHaveLength(0)
+    expect(lines.some(line => line.includes('read github review instructions failed'))).toBe(true)
+    await poller.dispose()
+  })
+
+  it('surfaces a review driver failure without marking the cursor', async () => {
+    const c = fakeClient()
+    c.prs = [pr]
+    const driver: ReviewDriver = {
+      driveReview: async () => { throw new Error('loop down') },
+      driveChat: async () => '',
+      dispose: async () => {},
+    }
+    const lines: string[] = []
+    const poller = buildPoller(c, driver, lines, { text: 'trusted', source: 'x' })
+
+    await poller.pollOnce(signal)
+    const state = await store.load()
+    expect(state.prs['owner/repo#42']).toBeUndefined()
+    expect(lines.some(line => line.includes('github review failed'))).toBe(true)
+    await poller.dispose()
+  })
+
+  it('continues past a comment poll failure', async () => {
+    const c = fakeClient()
+    c.prs = [pr]
+    const { driver } = fakeDriver()
+    const lines: string[] = []
+    const poller = buildPoller(c, driver, lines, { text: 'trusted', source: 'x' })
+    await poller.pollOnce(signal)
+
+    c.listIssueComments = async () => { throw new Error('boom') }
+    await poller.pollOnce(signal)
+    await poller.dispose()
+
+    expect(lines.some(line => line.includes('github comment poll failed'))).toBe(true)
+  })
+
+  it('surfaces a chat driver failure without posting', async () => {
+    const c = fakeClient()
+    c.prs = [pr]
+    const driver: ReviewDriver = {
+      driveReview: async () => ({ submitted: true, text: 'ok' }),
+      driveChat: async () => { throw new Error('loop down') },
+      dispose: async () => {},
+    }
+    const lines: string[] = []
+    const poller = buildPoller(c, driver, lines, { text: 'trusted', source: 'x' })
+    await poller.pollOnce(signal)
+
+    c.issueComments = [
+      { id: 9, body: '/bot explain this', user: { login: 'alice', type: 'User' }, createdAt: new Date(), htmlUrl: 'u' },
+    ]
+    await poller.pollOnce(signal)
+    await poller.dispose()
+
+    expect(c.issueCommentCalls).toHaveLength(0)
+    expect(lines.some(line => line.includes('github bot chat failed'))).toBe(true)
+  })
+})

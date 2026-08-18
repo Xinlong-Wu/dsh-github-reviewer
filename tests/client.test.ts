@@ -80,6 +80,17 @@ describe('GitHubClient.reviewInstructions', () => {
     const fetchImpl = vi.fn(async () => new Response('missing', { status: 404 }))
     await expect(client(fetchImpl as typeof fetch).getFileContents(repo, 'a.md', 'main')).rejects.toBeInstanceOf(NotFoundError)
   })
+
+  it('rejects contents paths that are not files', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ type: 'dir', encoding: 'base64', content: '' }), { status: 200 }))
+    await expect(client(fetchImpl as typeof fetch).getFileContents(repo, 'a.md', 'main')).rejects.toThrow('not file')
+  })
+
+  it('propagates non-404 instruction read failures', async () => {
+    const fetchImpl = vi.fn(async () => new Response('boom', { status: 500 }))
+    const pr = prPayload() as unknown as PullRequest
+    await expect(client(fetchImpl as typeof fetch).reviewInstructions(pr)).rejects.toThrow('status=500')
+  })
 })
 
 describe('GitHubClient comments', () => {
