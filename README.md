@@ -1,54 +1,54 @@
 # dsh-github-reviewer
 
-English | [中文](README.zh.md)
+[English](README.en.md) | 中文
 
-A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) plugin that polls configured GitHub repositories for open pull requests and posts automated `COMMENT` reviews. It is a TypeScript port of the GitHub reviewer built into [LingoBridge](https://github.com/Xinlong-Wu/LingoBridge), and it drives every review and `/bot` chat through the **harness agent loop**: one live Agent per PR, one session log per PR, durable through the harness session-persistence seam.
+一个 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 插件：轮询配置的 GitHub 仓库中开放的 pull request，并自动发布 `COMMENT` 评审。它是 [LingoBridge](https://github.com/Xinlong-Wu/LingoBridge) 内置 GitHub reviewer 的 TypeScript 移植，并且每次评审和 `/bot` 对话都通过 **harness agent 主循环**驱动：每个 PR 一个常驻 Agent、每个 PR 一条会话日志，通过 harness 的 session-persistence 机制持久化。
 
-## Features
+## 功能特性
 
-- Polls configured repositories for open pull requests; draft PRs are skipped.
-- Authenticates as a GitHub App: signs RS256 app JWTs and exchanges them for short-lived installation access tokens (cached until near expiry).
-- Reviews a PR when it first appears or when its `head.sha` changes; unchanged PRs are tracked in a per-account cursor file and not reviewed again.
-- Reads trusted review instructions only from `.github/review_instructions.md` in the base repository (base branch, then base SHA). If the file is missing and `defaultInstructions` is configured, that text is used; otherwise the PR is marked `missing_instructions` and retried only after the head SHA changes.
-- **One harness Agent and session per PR.** Reviews and `/bot` chats on the same PR run in the same session, so the loop replays the PR's full conversation history — the model remembers earlier findings and discussions. Sessions persist across restarts through `sessionPersistence` when a provider is mounted, and the reviewer resumes the existing session instead of starting a fresh one.
-- Runs the review through the real agent loop: the review system prompt is registered as a `complete` system-prompt section on the PR agent, and the guarded GitHub tools are registered as scoped harness tools, so the loop's logging, checkpoints, and compaction all apply.
-- Spawns a fresh per-turn GitHub MCP server (`github-mcp-server`) over stdio, injecting the installation token as `GITHUB_PERSONAL_ACCESS_TOKEN` and the configured web URL as `GITHUB_HOST`.
-- Guards every tool call: calls must target the current PR, reads are limited to allowed methods and refs, and writes are limited to the `create` → inline comments → `submit_pending(event=COMMENT)` pending-review workflow.
-- Handles comment commands on already-processed PRs: `/review` triggers a re-review, `/bot <message>` continues the PR conversation and posts the reply to the issue thread or the review thread it answered.
-- Sanitizes untrusted PR title/body text before prompt placement (HTML comments/hidden attributes, invisible/control characters, markdown image alt text, markdown link titles, GitHub token-like strings).
+- 轮询配置的仓库中的开放 PR；跳过 draft PR。
+- 以 GitHub App 身份认证：签名 RS256 应用 JWT，换取短期安装访问令牌（临近过期前缓存复用）。
+- PR 首次出现或 `head.sha` 变化时触发评审；未变化的 PR 记录在每账户的游标文件中，不会重复评审。
+- 只从基础仓库的 `.github/review_instructions.md` 读取可信评审指令（先按 base 分支，再按 base SHA）。文件缺失且配置了 `defaultInstructions` 时使用该默认文本；否则该 PR 被标记为 `missing_instructions`，仅当 head SHA 变化后才重试。
+- **每个 PR 一个 harness Agent 与会话。** 同一 PR 的评审和 `/bot` 对话在同一个会话中进行，主循环会重放该 PR 的完整对话历史——模型记得之前的发现和讨论。挂载了持久化 provider 时，会话跨重启保留，评审器恢复既有会话而非新建。
+- 评审走真实 agent 主循环：评审系统提示以 `complete` 系统提示段注册在 PR agent 上，被守卫的 GitHub 工具以作用域工具形式注册——主循环的日志、检查点、压缩全部生效。
+- 每个回合启动一个全新的 `github-mcp-server`（stdio），注入安装令牌为 `GITHUB_PERSONAL_ACCESS_TOKEN`，配置的 web URL 为 `GITHUB_HOST`。
+- 守卫每一次工具调用：调用必须指向当前 PR，读取被限制在允许的方法和 ref，写入被限制在 `create` → 行内评论 → `submit_pending(event=COMMENT)` 的 pending-review 工作流。
+- 处理已处理 PR 上的评论命令：`/review` 触发重新评审，`/bot <消息>` 继续 PR 对话并把回复发回对应的 issue 线程或 review 线程。
+- 在把不可信 PR 标题/正文放入提示词前做清洗（HTML 注释/隐藏属性、不可见/控制字符、markdown 图片 alt 文本、markdown 链接标题、类 GitHub 令牌字符串）。
 
-## Deployment requirements
+## 部署要求
 
-The plugin injects the harness `agents` and `sessions` services, so the deployment must mount the agent-loop family. A minimal working composition needs at least these rows beside `github-reviewer` (see [cordis.yml.example](./cordis.yml.example) for the full annotated example):
+插件注入 harness 的 `agents` 与 `sessions` 服务，因此部署必须挂载 agent-loop 家族。除 `github-reviewer` 外，最小可用组合至少需要以下条目（完整带注释示例见 [cordis.yml.example](./cordis.yml.example)）：
 
 ```yaml
-- id: llm-deepseek          # some LLM adapter
+- id: llm-deepseek          # 任意 LLM adapter
   name: '@deepseek-ai/dsh-llm-deepseek'
   config: { thinking: enabled, models: [{ id: deepseek-chat, contextWindow: 128000 }] }
-- id: agent-spine           # agent loop + system-prompt assembly + tool pipeline
+- id: agent-spine           # agent 主循环 + 系统提示组装 + 工具管道
   name: '@deepseek-ai/dsh-agent-spine-demo'
   config:
     agents: [{ id: main, provider: deepseek-official, model: deepseek-chat, cwd: !!js process.cwd() }]
-- id: persistence           # restart-safe per-PR sessions
+- id: persistence           # 跨重启的每 PR 会话
   name: '@deepseek-ai/dsh-session-persistence-jsonl'
   config: { root: './.sessions' }
 ```
 
-- **Without `sessionPersistence`**: the reviewer still works, but PR sessions are memory-only — after a restart the loop starts each PR from a fresh session.
-- **With `sessionPersistence`**: every turn is checkpointed, and the reviewer resumes the persisted PR session on restart (it never creates a second session for the same PR).
-- PR sessions live in the same session store as interactive sessions, so reviews are visible and replayable in the harness session UI.
+- **没有 `sessionPersistence`**：评审器仍可用，但 PR 会话只在内存中——重启后每个 PR 从全新会话开始。
+- **有 `sessionPersistence`**：每个回合都会被检查点化，重启后评审器恢复已持久化的 PR 会话（同一个 PR 不会创建第二个会话）。
+- PR 会话与交互式会话共用同一个会话存储，因此评审在 harness 会话界面里可见、可回放。
 
-## Install
+## 安装
 
 ```sh
 npm install @lingobridge/dsh-github-reviewer
 ```
 
-Peer dependency: `@deepseek-ai/cordis` (the harness Cordis runtime).
+peer 依赖：`@deepseek-ai/cordis`（harness 的 Cordis 运行时）。
 
-## Configuration
+## 配置
 
-Mount the plugin in the harness `cordis.yml`:
+在 harness 的 `cordis.yml` 中挂载插件：
 
 ```yaml
 plugins:
@@ -59,14 +59,14 @@ plugins:
           appId: '123456'
           installationId: '987654'
           privateKeyPath: '/etc/dsh/github-app.pem'
-          baseUrl: 'https://api.github.com'      # optional
-          webUrl: 'https://github.com'           # optional
-          pollIntervalMs: 120000                 # optional, default 2m
+          baseUrl: 'https://api.github.com'      # 可选
+          webUrl: 'https://github.com'           # 可选
+          pollIntervalMs: 120000                 # 可选，默认 2 分钟
           repositories:
             - 'owner/repo'
-          provider: 'deepseek'                   # llm provider route
-          model: 'deepseek-chat'                 # model id
-          review:                                # all optional
+          provider: 'deepseek'                   # llm provider 路由
+          model: 'deepseek-chat'                 # 模型 id
+          review:                                # 全部可选
             maxToolCalls: 30
             toolTimeoutMs: 30000
             toolResultLimit: 60000
@@ -79,83 +79,83 @@ plugins:
             args:
               - 'stdio'
               - '--tools=pull_request_read,get_file_contents,pull_request_review_write,add_comment_to_pending_review'
-            env: {}                              # optional; GitHub tokens are injected automatically
-            cwd: ''                              # optional
-          statePath: ''                          # optional; defaults to ./.dsh-github-reviewer/<account>.json
+            env: {}                              # 可选；GitHub 令牌自动注入
+            cwd: ''                              # 可选
+          statePath: ''                          # 可选；默认 ./.dsh-github-reviewer/<account>.json
 ```
 
-Multiple accounts run independent poll loops.
+多个账户各自运行独立的轮询循环。
 
-### Config reference
+### 配置参考
 
-| Field | Default | Description |
+| 字段 | 默认值 | 说明 |
 |---|---|---|
-| `accounts.<name>.appId` | — | GitHub App ID (required) |
-| `accounts.<name>.installationId` | — | GitHub App installation ID used to mint installation tokens (required) |
-| `accounts.<name>.privateKeyPath` | — | Local PEM private key path for signing GitHub App JWTs (required) |
-| `accounts.<name>.baseUrl` | `https://api.github.com` | GitHub REST API base URL |
-| `accounts.<name>.webUrl` | `https://github.com` | GitHub web URL and MCP `GITHUB_HOST` value |
-| `accounts.<name>.pollIntervalMs` | `120000` | Interval between PR polling passes |
-| `accounts.<name>.repositories` | — | Repository allowlist in `owner/repo` form; at least one is required |
-| `accounts.<name>.provider` | `deepseek` | Harness LLM provider route for this account's reviews |
-| `accounts.<name>.model` | — | Model id used for this account's reviews (required) |
-| `accounts.<name>.review.maxToolCalls` | `30` | Tool-call budget for one review turn; the guard rejects further calls |
-| `accounts.<name>.review.toolTimeoutMs` | `30000` | Per-tool-call timeout |
-| `accounts.<name>.review.toolResultLimit` | `60000` | Maximum tool-result characters returned to the model per call |
-| `accounts.<name>.review.timeoutMs` | `900000` | Overall deadline for one turn; the agent is cancelled past it |
-| `accounts.<name>.review.defaultInstructions` | — | Fallback instructions used only when `.github/review_instructions.md` is missing from the base repository |
-| `accounts.<name>.mcp.command` | — | Command used to start the per-turn GitHub MCP server (required) |
-| `accounts.<name>.mcp.args` | — | Arguments for the server; include explicit `--tools=...` (required) |
-| `accounts.<name>.mcp.env` | `{}` | Extra MCP server environment variables; GitHub tokens are injected automatically |
-| `accounts.<name>.mcp.cwd` | — | Optional working directory for the server |
-| `accounts.<name>.statePath` | `./.dsh-github-reviewer/<name>.json` | Cursor state file path |
+| `accounts.<name>.appId` | — | GitHub App ID（必填） |
+| `accounts.<name>.installationId` | — | 用于生成安装令牌的 GitHub App 安装 ID（必填） |
+| `accounts.<name>.privateKeyPath` | — | 用于签名 GitHub App JWT 的本地 PEM 私钥路径（必填） |
+| `accounts.<name>.baseUrl` | `https://api.github.com` | GitHub REST API 基础 URL |
+| `accounts.<name>.webUrl` | `https://github.com` | GitHub web URL 及 MCP 的 `GITHUB_HOST` 值 |
+| `accounts.<name>.pollIntervalMs` | `120000` | PR 轮询间隔 |
+| `accounts.<name>.repositories` | — | `owner/repo` 形式的仓库白名单；至少一个（必填） |
+| `accounts.<name>.provider` | `deepseek` | 该账户评审使用的 harness LLM provider 路由 |
+| `accounts.<name>.model` | — | 该账户评审使用的模型 id（必填） |
+| `accounts.<name>.review.maxToolCalls` | `30` | 单次评审回合的工具调用预算；超限被守卫拒绝 |
+| `accounts.<name>.review.toolTimeoutMs` | `30000` | 单次工具调用超时 |
+| `accounts.<name>.review.toolResultLimit` | `60000` | 每次调用返回给模型的最大工具结果字符数 |
+| `accounts.<name>.review.timeoutMs` | `900000` | 单回合总截止时间；超时后取消 agent |
+| `accounts.<name>.review.defaultInstructions` | — | 仅当基础仓库缺少 `.github/review_instructions.md` 时使用的兜底指令 |
+| `accounts.<name>.mcp.command` | — | 启动每回合 GitHub MCP server 的命令（必填） |
+| `accounts.<name>.mcp.args` | — | server 参数；请显式包含 `--tools=...`（必填） |
+| `accounts.<name>.mcp.env` | `{}` | 额外的 MCP server 环境变量；GitHub 令牌自动注入 |
+| `accounts.<name>.mcp.cwd` | — | server 的可选工作目录 |
+| `accounts.<name>.statePath` | `./.dsh-github-reviewer/<name>.json` | 游标状态文件路径 |
 
-Misconfiguration fails the plugin at load: missing credentials, invalid repository names, unreadable private keys, and missing MCP command/args all throw during activation instead of silently skipping reviews.
+配置错误会在加载时响亮失败：缺少凭证、无效的仓库名、无法读取的私钥、缺少 MCP command/args 都会在激活时报错，而不是静默跳过评审。
 
-## How it works
+## 工作原理
 
-### Polling and cursor state
+### 轮询与游标状态
 
-Each account runs its own poll loop (an immediate pass, then every `pollIntervalMs`). Ticks never overlap. For each PR the poller decides:
+每个账户运行自己的轮询循环（先立即跑一次，之后每 `pollIntervalMs` 一次）。各轮询不会重叠。对每个 PR，轮询器决定：
 
-- New PR or changed `head.sha` → run a review.
-- Reviewed or `missing_instructions` PR with an unchanged SHA → poll comments for `/review` and `/bot` commands.
+- 新 PR 或 `head.sha` 变化 → 执行评审。
+- 已评审或 `missing_instructions` 且 SHA 未变化 → 轮询评论中的 `/review` 与 `/bot` 命令。
 
-Cursor state is one JSON file per account (`prs` keyed by `owner/repo#number` with the head SHA, terminal status, and comment-check timestamps), written atomically via a temp-file rename.
+游标状态是每账户一个 JSON 文件（`prs` 以 `owner/repo#number` 为键，记录 head SHA、终态状态、评论检查时间戳），通过临时文件改名原子写入。
 
-### Per-PR agent and session
+### 每 PR 的 Agent 与会话
 
-On first contact with a PR, the runner asks the agent registry for an Agent whose session id is derived from the account and PR (`github:<account>:<owner>:<repo>:pr:<number>`):
+首次接触某个 PR 时，runner 向 agent 注册表请求一个 Agent，其会话 id 由账户与 PR 派生（`github:<account>:<owner>:<repo>:pr:<number>`）：
 
-- If the PR session already exists in `sessionPersistence`, it is **resumed** with the same setup world.
-- Otherwise a fresh agent and session are created; the session id is stable, so a later restart resumes the same PR conversation.
+- 若该 PR 会话已存在于 `sessionPersistence`，则以相同的 setup 世界 **恢复（resume）**。
+- 否则创建全新的 agent 与会话；会话 id 稳定，因此后续重启会恢复同一个 PR 对话。
 
-The agent setup registers the review world on the unpublished agent context: a `complete` system-prompt section (the review or chat prompt, selected per turn), the four guarded GitHub tools as scoped tool definitions, and a tool restriction that hides **every global tool** from this agent — the model sees only the closed review tool set, mirroring LingoBridge's guarded-only handler. The session log is the durable per-PR history — later turns replay it through the loop, and checkpoints/compaction apply exactly as for interactive sessions.
+agent setup 在未发布的 agent 上下文上注册「评审世界」：一个 `complete` 系统提示段（按回合在评审/聊天提示之间切换）、四个被守卫的 GitHub 工具（作用域工具定义），以及一条把**所有全局工具**从该 agent 隐藏的工具限制——模型只能看到封闭的评审工具集，与 LingoBridge 的「仅守卫工具」handler 一致。会话日志就是持久的每 PR 历史——后续回合经主循环重放它，检查点/压缩与交互式会话完全相同。
 
-### Review flow
+### 评审流程
 
-1. Read trusted instructions from the base repository (base branch, then base SHA) or the configured default.
-2. Spawn the per-turn GitHub MCP server with a fresh installation token and `GITHUB_HOST` injected.
-3. Arm the turn slot (PR, flow, instructions, live host, guard state) and wake the PR agent with the review user prompt via `agent.followup`.
-4. Await `agent.whenIdle()`: the loop drives model steps and tool calls; the guarded tools enforce the review rules on every call.
-5. Flush the session to persistence and mark the PR `reviewed` only when the guarded `submit_pending` call with `event=COMMENT` succeeded.
+1. 从基础仓库（base 分支，再 base SHA）或配置的默认值读取可信指令。
+2. 用全新的安装令牌与注入的 `GITHUB_HOST` 启动每回合 GitHub MCP server。
+3. 装配回合槽（PR、流程、指令、活动 host、守卫状态），用评审用户提示通过 `agent.followup` 唤醒 PR agent。
+4. 等待 `agent.whenIdle()`：主循环驱动模型步骤与工具调用；守卫工具在每次调用上执行评审规则。
+5. 将会话 flush 到持久化，仅当被守卫的 `submit_pending` 调用以 `event=COMMENT` 成功时才把该 PR 标记为 `reviewed`。
 
-### Tool guards
+### 工具守卫
 
-The four tools (`mcp_github_pull_request_read`, `mcp_github_get_file_contents`, `mcp_github_pull_request_review_write`, `mcp_github_add_comment_to_pending_review`) are registered only on the PR agent's scope, bound to that PR, and the agent scope hides every global tool — other agents never see them, and the review agent never sees global tools:
+四个工具（`mcp_github_pull_request_read`、`mcp_github_get_file_contents`、`mcp_github_pull_request_review_write`、`mcp_github_add_comment_to_pending_review`）只注册在 PR agent 的作用域上、绑定该 PR，且该作用域隐藏所有全局工具——其他 agent 永远看不到它们，评审 agent 也永远看不到全局工具：
 
-- `pull_request_read`: only `get`, `get_diff`, `get_files`, `get_status`, `get_check_runs`; must target the current PR.
-- `get_file_contents`: base/head repositories only; `sha` must be the current base or head SHA; `ref` must be the base/head branch, `refs/heads/<branch>`, `refs/pull/<number>/head` on the base repo, or one of those SHAs; `sha` and `ref` must not both be set. Omitting both defaults to the head SHA.
-- `pull_request_review_write`: `create` must not carry `event`/`body`, `commitID` is validated against (or injected as) the head SHA, and extra fields are dropped; `submit_pending` only with `event=COMMENT`.
-- `add_comment_to_pending_review`: relative paths only; `FILE` or `LINE` comments with `line`/`side` and paired `startLine`/`startSide` validation.
+- `pull_request_read`：只允许 `get`、`get_diff`、`get_files`、`get_status`、`get_check_runs`；必须指向当前 PR。
+- `get_file_contents`：只允许 base/head 仓库；`sha` 必须是当前 base 或 head SHA；`ref` 必须是 base/head 分支、`refs/heads/<branch>`、base 仓库上的 `refs/pull/<number>/head`，或这些 SHA 之一；`sha` 与 `ref` 不能同时给出，都不给时默认 head SHA。
+- `pull_request_review_write`：`create` 不得携带 `event`/`body`，`commitID` 会校验（或注入）为 head SHA，多余字段被丢弃；`submit_pending` 仅允许 `event=COMMENT`。
+- `add_comment_to_pending_review`：仅相对路径；`FILE` 或 `LINE` 评论，`line`/`side` 与成对的 `startLine`/`startSide` 校验。
 
-Approvals, request-changes reviews, thread resolution, PR updates, merges, and repository writes are rejected before reaching the MCP server. The tool-call budget (`maxToolCalls`), per-call timeout, result truncation, and the turn deadline are enforced by the guard and the runner on top of the loop.
+批准、请求变更、解决线程、更新 PR、合并、仓库写入都在到达 MCP server 之前被拒绝。工具调用预算（`maxToolCalls`）、单次超时、结果截断与回合截止时间由守卫和 runner 在主循环之上强制执行。
 
-### Trust model
+### 信任模型
 
-The review system prompt is registered as the agent's complete system prompt and carries trusted instructions only from the base-repo file or the configured default. PR metadata, title/body, diffs, changed files, and tool output are untrusted context; the title/body is sanitized before prompt placement, and the prompt instructs the model not to follow instructions found in untrusted context.
+评审系统提示注册为 agent 的完整系统提示，只携带来自 base 仓库文件或配置默认值的可信指令。PR 元数据、标题/正文、diff、变更文件与工具输出都是不可信上下文；标题/正文在放入提示词前会清洗，提示词明确要求模型不遵循不可信上下文中的指令。
 
-## Development
+## 开发
 
 ```sh
 npm install
@@ -165,10 +165,10 @@ npm run coverage
 npm run build
 ```
 
-## Known Limitations and Deferred Work
+## 已知限制与待办
 
-- The cursor file is local to the process host; running two hosts against the same account would poll twice. PR sessions are durable through the harness, but review *triggers* are not (LingoBridge keeps both in its per-account store).
-- The plugin requires a full agent-loop deployment (`agents` + `sessions`); it no longer activates in bare compositions without them. Without a `sessionPersistence` provider, PR sessions are memory-only across restarts.
-- PR sessions share the session store with interactive sessions; they are visible and replayable there, but nothing labels them as reviewer sessions beyond the session id.
-- GitHub API rate limits are surfaced as errors and the poll continues on the next tick; there is no backoff beyond the poll interval.
-- Comment polling uses the cursor timestamps as the `since` bound, so comments deleted before the next poll are not seen.
+- 游标文件属于进程主机本地；同一账户跑两台主机仍会重复轮询。PR 会话经 harness 持久化，但评审*触发*状态没有（LingoBridge 把两者都放在其账户 store 中）。
+- 插件要求完整的 agent-loop 部署（`agents` + `sessions`）；在没有它们的裸组合里不再激活。没有 `sessionPersistence` provider 时，PR 会话跨重启只是内存态。
+- PR 会话与交互式会话共用会话存储；在那里可见、可回放，但除了会话 id 之外没有标记它们是评审器会话。
+- GitHub API 限流会以错误形式呈现，下一轮询继续；除轮询间隔外没有退避。
+- 评论轮询以游标时间戳作为 `since` 边界，因此在下一次轮询前被删除的评论不会被看到。

@@ -91,14 +91,12 @@ export class StdioMcpHost implements McpHost {
    * @param config - server spawn parameters.
    * @param toolTimeoutMs - per-call timeout in milliseconds.
    * @param resultLimit - maximum characters returned to the model per call.
-   * @param signal - cancellation for the startup handshake.
    * @returns a connected host; the caller owns `close()`.
    */
   static async connect(
     config: McpServerConfig,
     toolTimeoutMs: number,
     resultLimit: number,
-    signal?: AbortSignal,
   ): Promise<StdioMcpHost> {
     const host = new StdioMcpHost(config, toolTimeoutMs, resultLimit)
     try {

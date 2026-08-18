@@ -47,7 +47,6 @@ describe('StdioMcpHost against a real MCP server process', () => {
       { command: process.execPath, args: ['-e', STUB_SERVER], env: {}, cwd: '' },
       5000,
       60000,
-      signal,
     )
     try {
       const tools = await host.listTools(signal)
@@ -74,7 +73,6 @@ describe('StdioMcpHost against a real MCP server process', () => {
       { command: process.execPath, args: ['-e', STUB_SERVER], env: {}, cwd: '' },
       5000,
       60000,
-      signal,
     )
     await host.close()
     await host.close()
@@ -85,7 +83,6 @@ describe('StdioMcpHost against a real MCP server process', () => {
       { command: process.execPath, args: ['-e', STUB_SERVER], env: {}, cwd: '' },
       5000,
       60000,
-      signal,
     )
     try {
       const controller = new AbortController()
@@ -101,7 +98,6 @@ describe('StdioMcpHost against a real MCP server process', () => {
       { command: process.execPath, args: ['-e', STUB_SERVER], env: {}, cwd: '' },
       5000,
       60000,
-      signal,
     )
     try {
       const outcome = await host.call('fail', {}, signal)
@@ -117,7 +113,6 @@ describe('StdioMcpHost against a real MCP server process', () => {
       { command: process.execPath, args: ['-e', STUB_SERVER], env: {}, cwd: '' },
       5000,
       20,
-      signal,
     )
     try {
       const outcome = await host.call('long', {}, signal)
@@ -134,7 +129,6 @@ describe('StdioMcpHost against a real MCP server process', () => {
       { command: 'definitely-not-a-real-command', args: [], env: {}, cwd: '' },
       5000,
       60000,
-      signal,
     )).rejects.toThrow('connect github mcp server')
   })
 })

@@ -8,14 +8,14 @@ on:
 
 jobs:
   check:
-    name: typecheck · test · build
+    name: typecheck · lint · test · coverage · build
     runs-on: ubuntu-latest
     env:
       CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -26,10 +26,13 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Lint
+        run: npm run lint
+
       - name: Tests
         run: npm test
 
-      - name: Coverage
+      - name: Coverage (threshold 80%)
         run: npm run coverage
 
       - name: Upload coverage to Codecov
@@ -41,3 +44,9 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Package hygiene (publint)
+        run: npm run publint
+
+      - name: NodeNext consumer smoke (import built ESM)
+        run: node --input-type=module -e "import('./lib/index.js').then(m => { if (typeof m.apply !== 'function' || m.name !== 'github-reviewer') process.exit(1) })"
