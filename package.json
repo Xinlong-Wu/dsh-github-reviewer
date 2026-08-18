@@ -2,7 +2,7 @@
   "name": "@lingobridge/dsh-github-reviewer",
   "description": "DeepSeek Harness plugin: automated GitHub PR review bot ported from LingoBridge",
   "version": "0.1.0",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
