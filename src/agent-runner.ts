@@ -164,6 +164,11 @@ export class AgentRunner {
     const sessionId = SessionId(key)
     const agentOptions = { provider: this.deps.account.provider, model: this.deps.account.model }
     const setup = (agentCtx: Context): void => {
+      // The review world is a closed tool set, like LingoBridge's guarded-only
+      // handler: hide every global tool so the model can reach only the four
+      // scoped GitHub tools below (scoped registrations are unaffected by
+      // restrictions).
+      agentCtx.tools.restrict({ allow: [] })
       agentCtx.systemPrompt.section({
         name: 'github-reviewer',
         order: -100,

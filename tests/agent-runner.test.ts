@@ -105,7 +105,10 @@ function makeWorld(): World {
   const fake = fakeHandle([])
   const fakeCtx = {
     systemPrompt: { section: (section: World['sections'][number]) => { sections.push(section) } },
-    tools: { register: (definition: ToolDefinition) => { registeredTools.push(definition); return () => {} } },
+    tools: {
+      register: (definition: ToolDefinition) => { registeredTools.push(definition); return () => {} },
+      restrict: vi.fn(() => () => {}),
+    },
   } as unknown as Context
   const create = vi.fn(async (options: { setup?: (ctx: Context) => void }) => {
     createOptions.push(options)

@@ -118,6 +118,18 @@ describe('AgentRunner against the real harness agent loop', () => {
     try {
       const seen: GenerateOptions[] = []
       const mcpCalls: Array<{ remote: string; args: Record<string, unknown> }> = []
+      // A global tool the review agent must NOT see: the setup restricts the
+      // agent scope to only the scoped GitHub tools.
+      ctx.tools.register({
+        name: 'fake_global_tool',
+        description: 'a global tool the reviewer must not see',
+        parameters: {},
+        output: {
+          schema: { type: 'object', properties: {}, additionalProperties: false },
+          render: () => [{ type: 'text', text: 'nope' }],
+        },
+        execute: async () => ({ content: [{ type: 'text', text: 'nope' }] }),
+      })
       ctx.llm.registerAdapter(['deepseek'], new ScriptedAdapter(
         [
           () => [
@@ -155,6 +167,16 @@ describe('AgentRunner against the real harness agent loop', () => {
       // The review user prompt was the turn's user message.
       expect(seen[0].messages.some(message => message.role === 'user'
         && message.content.some(block => block.type === 'text' && block.text.includes('<pull_request>')))).toBe(true)
+      // The model-visible tool set is the closed review world: only the four
+      // scoped GitHub tools, never global tools.
+      const requestTools = seen[0].tools?.map(tool => tool.name) ?? []
+      expect(requestTools.sort()).toEqual([
+        'mcp_github_add_comment_to_pending_review',
+        'mcp_github_get_file_contents',
+        'mcp_github_pull_request_read',
+        'mcp_github_pull_request_review_write',
+      ])
+      expect(requestTools).not.toContain('fake_global_tool')
       // The guarded write tool ran with validated arguments.
       expect(mcpCalls).toEqual([{
         remote: 'pull_request_review_write',

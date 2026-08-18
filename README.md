@@ -128,7 +128,7 @@ On first contact with a PR, the runner asks the agent registry for an Agent whos
 - If the PR session already exists in `sessionPersistence`, it is **resumed** with the same setup world.
 - Otherwise a fresh agent and session are created; the session id is stable, so a later restart resumes the same PR conversation.
 
-The agent setup registers the review world on the unpublished agent context: a `complete` system-prompt section (the review or chat prompt, selected per turn) and the four guarded GitHub tools as scoped tool definitions. The session log is the durable per-PR history — later turns replay it through the loop, and checkpoints/compaction apply exactly as for interactive sessions.
+The agent setup registers the review world on the unpublished agent context: a `complete` system-prompt section (the review or chat prompt, selected per turn), the four guarded GitHub tools as scoped tool definitions, and a tool restriction that hides **every global tool** from this agent — the model sees only the closed review tool set, mirroring LingoBridge's guarded-only handler. The session log is the durable per-PR history — later turns replay it through the loop, and checkpoints/compaction apply exactly as for interactive sessions.
 
 ### Review flow
 
@@ -140,7 +140,7 @@ The agent setup registers the review world on the unpublished agent context: a `
 
 ### Tool guards
 
-The four tools (`mcp_github_pull_request_read`, `mcp_github_get_file_contents`, `mcp_github_pull_request_review_write`, `mcp_github_add_comment_to_pending_review`) are registered only on the PR agent's scope, bound to that PR:
+The four tools (`mcp_github_pull_request_read`, `mcp_github_get_file_contents`, `mcp_github_pull_request_review_write`, `mcp_github_add_comment_to_pending_review`) are registered only on the PR agent's scope, bound to that PR, and the agent scope hides every global tool — other agents never see them, and the review agent never sees global tools:
 
 - `pull_request_read`: only `get`, `get_diff`, `get_files`, `get_status`, `get_check_runs`; must target the current PR.
 - `get_file_contents`: base/head repositories only; `sha` must be the current base or head SHA; `ref` must be the base/head branch, `refs/heads/<branch>`, `refs/pull/<number>/head` on the base repo, or one of those SHAs; `sha` and `ref` must not both be set. Omitting both defaults to the head SHA.
