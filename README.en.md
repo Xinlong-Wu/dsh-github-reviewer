@@ -43,7 +43,7 @@ The plugin injects the harness `agents` and `sessions` services, so the deployme
 ## Install
 
 ```sh
-npm install @lingobridge/dsh-github-reviewer
+npm install @xinlong/dsh-github-reviewer
 ```
 
 Peer dependency: `@deepseek-ai/cordis` (the harness Cordis runtime).
@@ -54,7 +54,7 @@ Mount the plugin in the harness `cordis.yml`, **one plugin instance per account*
 
 ```yaml
 - id: github-reviewer-org
-  name: '@lingobridge/dsh-github-reviewer'
+  name: '@xinlong/dsh-github-reviewer'
   config:
     name: org                             # account label: logs + cursor record key
     appId: '123456'
