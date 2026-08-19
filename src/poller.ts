@@ -10,6 +10,7 @@
 import type { ResolvedAccountConfig } from './config.ts'
 import type { TokenSource } from './github/auth.ts'
 import type { GitHubClient } from './github/client.ts'
+import { GitHubRateLimitError } from './github/client.ts'
 import {
   CURSOR_STATUS_MISSING_INSTRUCTIONS,
   CURSOR_STATUS_REVIEWED,
@@ -17,6 +18,9 @@ import {
   cursorKey,
   markCommentCheck,
   markCursor,
+  markReviewFailure,
+  recordProcessedComment,
+  reviewBackoffActive,
   shouldProcessCursor,
 } from './github/cursor.ts'
 import type { CursorState } from './github/cursor.ts'
@@ -49,6 +53,8 @@ interface CommentEvent {
   id: number
   body: string
   user: { login: string; type: string }
+  /** GitHub `author_association` of the comment author. */
+  authorAssociation: string
   createdAt: Date
   /** Source of the comment: issue thread or review thread. */
   replyMode: 'issue' | 'review'
@@ -71,8 +77,10 @@ export class AccountPoller {
   private readonly abortController = new AbortController()
   private running = false
   private timer: ReturnType<typeof setInterval> | undefined
-  /** Draft PRs already logged as skipped, so the line is emitted once per unchanged PR. */
-  private readonly skippedDrafts = new Set<string>()
+  /** The currently executing tick, so dispose can wait for it. */
+  private currentTick: Promise<void> | undefined
+  /** Draft PRs already logged as skipped, so the line is emitted once per unchanged PR. Bounded. */
+  private readonly skippedDrafts = new Map<string, true>
 
   /**
    * @param deps - runtime dependencies.
@@ -89,16 +97,37 @@ export class AccountPoller {
    * `pollIntervalMs`. Ticks skip while the previous poll still runs.
    */
   start(): void {
-    void this.safeTick()
-    this.timer = setInterval(() => void this.safeTick(), this.deps.account.pollIntervalMs)
+    this.currentTick = this.safeTick()
+    this.timer = setInterval(() => {
+      this.currentTick = this.safeTick()
+    }, this.deps.account.pollIntervalMs)
     this.timer.unref()
   }
 
-  /** Abort in-flight work, stop the timer, and dispose the PR agents. */
+  /**
+   * Abort in-flight work, stop the timer, wait briefly for the running tick
+   * to unwind, and dispose the PR agents. Waiting keeps cursor writes from
+   * racing the storage-domain close that follows in the plugin disposer.
+   */
   async dispose(): Promise<void> {
     if (this.timer !== undefined) clearInterval(this.timer)
     this.timer = undefined
     this.abortController.abort()
+    const tick = this.currentTick
+    if (tick !== undefined) {
+      let grace: ReturnType<typeof setTimeout> | undefined
+      try {
+        await Promise.race([
+          tick,
+          new Promise<void>(resolve => {
+            grace = setTimeout(resolve, 5000)
+            grace.unref()
+          }),
+        ])
+      } finally {
+        if (grace !== undefined) clearTimeout(grace)
+      }
+    }
     await this.deps.driver.dispose()
   }
 
@@ -129,6 +158,7 @@ export class AccountPoller {
       try {
         prs = await this.deps.client.listOpenPullRequests(repo, signal)
       } catch (error) {
+        if (this.noteRateLimited(repoName, error)) return
         this.logger.warn(`list github pull requests failed account=${this.deps.accountName} repo=${repoName}: ${String(error)}`)
         continue
       }
@@ -137,15 +167,21 @@ export class AccountPoller {
         if (signal.aborted) return
         if (pr.draft) {
           const skipKey = `${fullName(pr.base.repo)}#${pr.number}@${shortSHA(pr.head.sha)}:draft`
-          if (!this.skippedDrafts.has(skipKey)) {
+          if (this.noteSkippedDraft(skipKey)) {
             this.logger.debug(`skipping draft github pr repo=${fullName(pr.base.repo)} number=${pr.number} head=${shortSHA(pr.head.sha)}`)
-            this.skippedDrafts.add(skipKey)
           }
           continue
         }
-        // Phase 1: new commits trigger a review.
+        // Phase 1: new commits trigger a review, unless a recent failure is still backing off.
         if (shouldProcessCursor(state, pr)) {
-          await this.processReview(state, pr, signal)
+          const entry = state.prs[cursorKey(pr)]
+          if (reviewBackoffActive(entry, pr, new Date(), this.deps.account.pollIntervalMs)) {
+            this.logger.debug(
+              `github review backing off repo=${fullName(pr.base.repo)} number=${pr.number} head=${shortSHA(pr.head.sha)} failures=${entry?.failCount ?? 0}`,
+            )
+          } else {
+            await this.executeReview(state, pr, signal)
+          }
           continue
         }
         // Phase 2: comment commands on already-processed PRs.
@@ -155,48 +191,82 @@ export class AccountPoller {
         try {
           await this.pollComments(state, pr, signal)
         } catch (error) {
+          if (this.noteRateLimited(repoName, error)) return
           this.logger.warn(`github comment poll failed repo=${fullName(pr.base.repo)} number=${pr.number}: ${String(error)}`)
         }
       }
     }
   }
 
-  /** Resolve trusted review instructions with the config default fallback. */
-  private async reviewInstructions(pr: PullRequest, signal: AbortSignal): Promise<{ instructions?: ReviewInstructions; ok: boolean }> {
-    let outcome: { instructions?: ReviewInstructions; ok: boolean }
+  /** Log and report whether the error is a rate limit, in which case the tick stops early. */
+  private noteRateLimited(repoName: string, error: unknown): boolean {
+    if (!(error instanceof GitHubRateLimitError)) return false
+    const retry = error.retryAfterSeconds === undefined ? '' : ` retry_after_s=${error.retryAfterSeconds}`
+    this.logger.warn(`github rate limited account=${this.deps.accountName} repo=${repoName}${retry}; skipping rest of tick`)
+    return true
+  }
+
+  /** Record a skipped draft key; returns false when the key was already logged. Bounded to 500 keys. */
+  private noteSkippedDraft(key: string): boolean {
+    if (this.skippedDrafts.has(key)) return false
+    if (this.skippedDrafts.size >= 500) {
+      const oldest = this.skippedDrafts.keys().next().value
+      if (oldest !== undefined) this.skippedDrafts.delete(oldest)
+    }
+    this.skippedDrafts.set(key, true)
+    return true
+  }
+
+  /**
+   * Resolve trusted review instructions with the config default fallback.
+   * Three outcomes: `ok` (instructions found or defaulted), `missing`
+   * (no file and no default — safe to record in the cursor), and `error`
+   * (transient API failure — must NOT be recorded, so the next tick retries).
+   */
+  private async reviewInstructions(
+    pr: PullRequest,
+    signal: AbortSignal,
+  ): Promise<{ kind: 'ok'; instructions: ReviewInstructions } | { kind: 'missing' } | { kind: 'error' }> {
     try {
-      outcome = await this.deps.client.reviewInstructions(pr, signal)
+      const outcome = await this.deps.client.reviewInstructions(pr, signal)
+      if (outcome.ok && outcome.instructions !== undefined) return { kind: 'ok', instructions: outcome.instructions }
     } catch (error) {
       this.logger.warn(`read github review instructions failed repo=${fullName(pr.base.repo)} number=${pr.number} head=${shortSHA(pr.head.sha)}: ${String(error)}`)
-      return { ok: false }
+      return { kind: 'error' }
     }
-    if (outcome.ok && outcome.instructions !== undefined) return outcome
     const fallback = this.deps.account.review.defaultInstructions
     if (fallback === '') {
       this.logger.warn(`missing github review instructions repo=${fullName(pr.base.repo)} number=${pr.number} head=${shortSHA(pr.head.sha)}`)
-      return { ok: false }
+      return { kind: 'missing' }
     }
     this.logger.warn(
       `falling back to config default_instructions account=${this.deps.accountName} repo=${fullName(pr.base.repo)} number=${pr.number} head=${shortSHA(pr.head.sha)}`,
     )
     return {
+      kind: 'ok',
       instructions: {
         text: fallback,
-        source: `config:github-reviewer.accounts.${this.deps.accountName}.review.defaultInstructions`,
+        source: `config:github-reviewer.${this.deps.accountName}.review.defaultInstructions`,
       },
-      ok: true,
     }
   }
 
-  /** Run one review for a PR and advance the cursor when a COMMENT review lands. */
-  private async processReview(state: CursorState, pr: PullRequest, signal: AbortSignal): Promise<void> {
+  /**
+   * Run one review for a PR and advance the cursor. Terminal outcomes are
+   * recorded: a submitted COMMENT review marks the PR reviewed, missing
+   * instructions mark it accordingly, and failures are recorded with backoff
+   * state so the next ticks retry with increasing delay. Transient
+   * instruction-read errors leave the cursor untouched.
+   */
+  private async executeReview(state: CursorState, pr: PullRequest, signal: AbortSignal): Promise<void> {
     const resolved = await this.reviewInstructions(pr, signal)
-    if (!resolved.ok) {
+    if (resolved.kind === 'error') return
+    if (resolved.kind === 'missing') {
       markCursor(state, pr, CURSOR_STATUS_MISSING_INSTRUCTIONS, new Date())
       await this.deps.store.save(state)
       return
     }
-    const instructions = resolved.instructions as ReviewInstructions
+    const instructions = resolved.instructions
     let outcome: { submitted: boolean; text: string }
     try {
       this.logger.info(
@@ -206,6 +276,8 @@ export class AccountPoller {
       outcome = await this.deps.driver.driveReview(pr, instructions, signal)
     } catch (error) {
       this.logger.warn(`github review failed repo=${fullName(pr.base.repo)} number=${pr.number} head=${shortSHA(pr.head.sha)}: ${String(error)}`)
+      markReviewFailure(state, pr, new Date())
+      await this.deps.store.save(state)
       return
     }
     this.logger.debug(
@@ -214,6 +286,8 @@ export class AccountPoller {
     )
     if (!outcome.submitted) {
       this.logger.warn(`github review completed without COMMENT submission repo=${fullName(pr.base.repo)} number=${pr.number} head=${shortSHA(pr.head.sha)}`)
+      markReviewFailure(state, pr, new Date())
+      await this.deps.store.save(state)
       return
     }
     markCursor(state, pr, CURSOR_STATUS_REVIEWED, new Date())
@@ -236,6 +310,7 @@ export class AccountPoller {
         id: comment.id,
         body: comment.body,
         user: comment.user,
+        authorAssociation: comment.authorAssociation,
         createdAt: comment.createdAt,
         replyMode: 'issue',
         reviewCommentId: 0,
@@ -247,6 +322,7 @@ export class AccountPoller {
         id: comment.id,
         body: comment.body,
         user: comment.user,
+        authorAssociation: comment.authorAssociation,
         createdAt: comment.createdAt,
         replyMode: 'review',
         reviewCommentId: comment.id,
@@ -262,49 +338,60 @@ export class AccountPoller {
 
     this.logger.debug(`found github pr comments repo=${fullName(pr.base.repo)} number=${pr.number} count=${events.length} since=${since?.toISOString() ?? ''}`)
 
+    // GitHub's `since` is inclusive and second-granular, so boundary comments
+    // (and edited older comments) reappear; the cursor's processed-id set
+    // dedupes them across ticks. Issue and review comment ids live in
+    // separate id spaces, so the key is scoped by source.
+    const processed = new Set(entry?.processedCommentIds ?? [])
     for (const event of events) {
       if (signal.aborted) return
-      const command = parseCommentCommand(event.body)
-      switch (command.type) {
-        case 'review': {
-          this.logger.info(`github re-review triggered by comment repo=${fullName(pr.base.repo)} number=${pr.number} comment_id=${event.id} user=${event.user.login}`)
-          const resolved = await this.reviewInstructions(pr, signal)
-          if (!resolved.ok) {
-            markCursor(state, pr, CURSOR_STATUS_MISSING_INSTRUCTIONS, new Date())
-            await this.deps.store.save(state)
-            return
-          }
-          let outcome: { submitted: boolean; text: string }
-          try {
-            outcome = await this.deps.driver.driveReview(pr, resolved.instructions as ReviewInstructions, signal)
-          } catch (error) {
-            this.logger.warn(`github re-review failed repo=${fullName(pr.base.repo)} number=${pr.number}: ${String(error)}`)
+      const dedupeKey = `${event.replyMode}:${event.id}`
+      if (processed.has(dedupeKey)) continue
+      recordProcessedComment(state, pr, dedupeKey)
+      processed.add(dedupeKey)
+      if (!this.isCommandAuthorAllowed(event)) {
+        const command = parseCommentCommand(event.body)
+        if (command.type !== 'none') {
+          this.logger.debug(
+            `ignoring github comment command from unauthorized author repo=${fullName(pr.base.repo)} number=${pr.number}`
+            + ` comment_id=${event.id} user=${event.user.login} association=${event.authorAssociation}`,
+          )
+        }
+      } else {
+        const command = parseCommentCommand(event.body)
+        switch (command.type) {
+          case 'review': {
+            this.logger.info(`github re-review triggered by comment repo=${fullName(pr.base.repo)} number=${pr.number} comment_id=${event.id} user=${event.user.login}`)
+            await this.executeReview(state, pr, signal)
             break
           }
-          if (outcome.submitted) {
-            markCursor(state, pr, CURSOR_STATUS_REVIEWED, new Date())
-            await this.deps.store.save(state)
-            this.logger.info(`github re-review submitted repo=${fullName(pr.base.repo)} number=${pr.number} head=${shortSHA(pr.head.sha)}`)
+          case 'bot': {
+            this.logger.info(`github bot chat triggered by comment repo=${fullName(pr.base.repo)} number=${pr.number} comment_id=${event.id} user=${event.user.login}`)
+            try {
+              await this.handleBotChat(pr, command.message, event, signal)
+            } catch (error) {
+              this.logger.warn(`github bot chat failed repo=${fullName(pr.base.repo)} number=${pr.number} comment_id=${event.id}: ${String(error)}`)
+            }
+            break
           }
-          // After /review, skip remaining comments — the re-review covers latest state.
-          return
+          case 'none':
+            break
         }
-        case 'bot': {
-          this.logger.info(`github bot chat triggered by comment repo=${fullName(pr.base.repo)} number=${pr.number} comment_id=${event.id} user=${event.user.login}`)
-          try {
-            await this.handleBotChat(pr, command.message, event, signal)
-          } catch (error) {
-            this.logger.warn(`github bot chat failed repo=${fullName(pr.base.repo)} number=${pr.number} comment_id=${event.id}: ${String(error)}`)
-          }
-          break
-        }
-        case 'none':
-          break
+      }
+      // Advance the comment boundary after every event so a mid-batch failure
+      // never replays events that were already answered.
+      if (!Number.isNaN(event.createdAt.getTime())) {
+        markCommentCheck(state, pr, event.createdAt)
+        await this.deps.store.save(state)
       }
     }
+  }
 
-    markCommentCheck(state, pr, new Date())
-    await this.deps.store.save(state)
+  /** Whether the comment author's association may trigger `/review` and `/bot` commands. */
+  private isCommandAuthorAllowed(event: CommentEvent): boolean {
+    const allowed = this.deps.account.review.commandAuthorAssociations
+    if (allowed.includes('*')) return true
+    return allowed.includes(event.authorAssociation.toUpperCase())
   }
 
   /** Answer one `/bot` comment and post the reply back to the right thread. */

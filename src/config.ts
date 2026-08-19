@@ -20,6 +20,11 @@ export const DEFAULT_TOOL_RESULT_LIMIT = 60_000
 export const DEFAULT_REVIEW_TIMEOUT_MS = 15 * 60_000
 /** Default account label when the instance config omits `name`. */
 export const DEFAULT_ACCOUNT_NAME = 'default'
+/**
+ * Default `author_association` values allowed to trigger `/review` and `/bot`:
+ * maintainers only, so strangers on public repos cannot drive LLM spend.
+ */
+export const DEFAULT_COMMAND_AUTHOR_ASSOCIATIONS = ['OWNER', 'MEMBER', 'COLLABORATOR']
 
 /** Per-account review limits, fully resolved after normalization. */
 export interface ReviewConfig {
@@ -29,6 +34,11 @@ export interface ReviewConfig {
   /** Overall deadline for one review conversation in milliseconds. */
   timeoutMs: number
   defaultInstructions: string
+  /**
+   * GitHub `author_association` values allowed to trigger `/review` and `/bot`
+   * commands. Defaults to maintainers; `['*']` allows anyone.
+   */
+  commandAuthorAssociations: string[]
 }
 
 /** Per-review GitHub MCP server spawn parameters, fully resolved after normalization. */
@@ -41,7 +51,7 @@ export interface McpConfig {
 
 /** One GitHub App review account as loaded from cordis.yml, flat per instance. */
 export interface Config {
-  /** Account label used in logs and the default state file; defaults to `default`. */
+  /** Account label used in logs and as the cursor record key; defaults to `default`. */
   name?: string
   appId: string
   installationId: string
@@ -76,6 +86,7 @@ const Review = z.object({
   toolResultLimit: z.number().min(1).default(DEFAULT_TOOL_RESULT_LIMIT),
   timeoutMs: z.number().min(1).default(DEFAULT_REVIEW_TIMEOUT_MS),
   defaultInstructions: z.string().default(''),
+  commandAuthorAssociations: z.array(z.string()).default([...DEFAULT_COMMAND_AUTHOR_ASSOCIATIONS]),
 })
 
 const Mcp = z.object({
@@ -113,8 +124,11 @@ export function normalizeAccountConfig(account: Config): ResolvedAccountConfig {
   for (const raw of account.repositories) {
     const parsed = parseRepository(raw)
     const value = parsed === undefined ? raw.trim() : `${parsed.owner}/${parsed.name}`
-    if (value === '' || seen.has(value)) continue
-    seen.add(value)
+    if (value === '') continue
+    // GitHub owner/repo names are case-insensitive; dedupe on the folded key.
+    const key = value.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
     repositories.push(value)
   }
   const env: Record<string, string> = {}
@@ -138,6 +152,9 @@ export function normalizeAccountConfig(account: Config): ResolvedAccountConfig {
       toolResultLimit: account.review?.toolResultLimit ?? DEFAULT_TOOL_RESULT_LIMIT,
       timeoutMs: account.review?.timeoutMs ?? DEFAULT_REVIEW_TIMEOUT_MS,
       defaultInstructions: (account.review?.defaultInstructions ?? '').trim(),
+      commandAuthorAssociations: (account.review?.commandAuthorAssociations ?? DEFAULT_COMMAND_AUTHOR_ASSOCIATIONS)
+        .map(value => value.trim().toUpperCase())
+        .filter(value => value !== ''),
     },
     mcp: {
       command: (account.mcp?.command ?? '').trim(),
@@ -168,4 +185,23 @@ export function validateAccountRuntime(name: string, account: ResolvedAccountCon
   }
   if (account.mcp.command === '') throw new Error(`github-reviewer.${name}.mcp.command is required`)
   if (account.mcp.args.length === 0) throw new Error(`github-reviewer.${name}.mcp.args is required`)
+  validateHttpUrl(name, 'baseUrl', account.baseUrl, false)
+  validateHttpUrl(name, 'webUrl', account.webUrl, true)
+}
+
+/** Assert a config URL is http(s); `allowEmpty` permits the empty string (feature disabled). */
+function validateHttpUrl(name: string, field: string, value: string, allowEmpty: boolean): void {
+  if (value === '') {
+    if (allowEmpty) return
+    throw new Error(`github-reviewer.${name}.${field} is required`)
+  }
+  let url: URL
+  try {
+    url = new URL(value)
+  } catch {
+    throw new Error(`github-reviewer.${name}.${field} is not a valid URL: ${value}`)
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+    throw new Error(`github-reviewer.${name}.${field} must be http(s): ${value}`)
+  }
 }

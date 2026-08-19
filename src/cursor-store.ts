@@ -15,9 +15,13 @@ import { CURSOR_STATUS_MISSING_INSTRUCTIONS, CURSOR_STATUS_REVIEWED, emptyCursor
 /** Runtime schema for one cursor entry, matching {@link CursorState}. */
 const cursorEntrySchema = z.object({
   headSHA: z.string(),
-  status: z.enum([CURSOR_STATUS_REVIEWED, CURSOR_STATUS_MISSING_INSTRUCTIONS]),
+  status: z.enum([CURSOR_STATUS_REVIEWED, CURSOR_STATUS_MISSING_INSTRUCTIONS]).optional(),
   updatedAt: z.string().optional(),
   lastCommentCheck: z.string().optional(),
+  lastFailedSHA: z.string().optional(),
+  failCount: z.number().optional(),
+  lastFailedAt: z.string().optional(),
+  processedCommentIds: z.array(z.string()).optional(),
 })
 
 /** Runtime schema for the whole per-account cursor row. */
@@ -55,10 +59,16 @@ export class StorageDomainCursorStore implements CursorStore {
 
   /**
    * Load the account's cursor record, or an empty cursor when absent.
-   * @returns the current cursor state.
+   *
+   * The storage domain returns its authoritative in-memory record (no
+   * defensive copies), and domain records must not be mutated in place — a
+   * rejected `put` would otherwise leave memory diverging from the durable
+   * record. Return a deep copy so callers may mutate freely before `save`.
+   * @returns a mutable copy of the current cursor state.
    */
   async load(): Promise<CursorState> {
-    return this.table.get(this.accountKey) ?? emptyCursorState()
+    const record = await this.table.get(this.accountKey)
+    return record === undefined ? emptyCursorState() : structuredClone(record)
   }
 
   /**

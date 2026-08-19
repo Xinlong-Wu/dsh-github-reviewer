@@ -34,4 +34,16 @@ describe('parseCommentCommand', () => {
   it('does not treat a command in a later line as a command', () => {
     expect(parseCommentCommand('thanks\n/bot hi')).toEqual({ type: 'none', message: '' })
   })
+
+  it('recognizes commands separated by tabs or other whitespace', () => {
+    expect(parseCommentCommand('/review\tnow')).toEqual({ type: 'review', message: '' })
+    expect(parseCommentCommand('/bot\thello')).toEqual({ type: 'bot', message: 'hello' })
+    expect(parseCommentCommand('/bot  hello')).toEqual({ type: 'bot', message: 'hello' })
+  })
+
+  it('rejects glued prefixes like /reviewbot and /bots', () => {
+    expect(parseCommentCommand('/reviewbot x')).toEqual({ type: 'none', message: '' })
+    expect(parseCommentCommand('/bots hi')).toEqual({ type: 'none', message: '' })
+    expect(parseCommentCommand('/botx')).toEqual({ type: 'none', message: '' })
+  })
 })

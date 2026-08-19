@@ -31,6 +31,7 @@ describe('normalizeAccountConfig', () => {
       toolResultLimit: DEFAULT_TOOL_RESULT_LIMIT,
       timeoutMs: DEFAULT_REVIEW_TIMEOUT_MS,
       defaultInstructions: '',
+      commandAuthorAssociations: ['OWNER', 'MEMBER', 'COLLABORATOR'],
     })
     expect(normalized.mcp).toEqual({ command: '', args: [], env: {}, cwd: '' })
   })
@@ -45,12 +46,20 @@ describe('normalizeAccountConfig', () => {
     expect(normalized.review.toolTimeoutMs).toBe(DEFAULT_TOOL_TIMEOUT_MS)
   })
 
-  it('dedupes repositories, drops blanks, and keeps unparseable raw entries', () => {
+  it('dedupes repositories case-insensitively, drops blanks, and keeps unparseable raw entries', () => {
     const normalized = normalizeAccountConfig({
       ...base,
-      repositories: ['owner/repo', 'owner/repo', 'a/b/c', '', 'owner/other'],
+      repositories: ['owner/repo', 'Owner/Repo', 'a/b/c', '', 'owner/other'],
     })
     expect(normalized.repositories).toEqual(['owner/repo', 'a/b/c', 'owner/other'])
+  })
+
+  it('normalizes command author associations to upper case', () => {
+    const normalized = normalizeAccountConfig({
+      ...base,
+      review: { commandAuthorAssociations: [' owner ', '', '*'] },
+    } as unknown as AccountConfig)
+    expect(normalized.review.commandAuthorAssociations).toEqual(['OWNER', '*'])
   })
 
   it('normalizes mcp env keys and args', () => {
@@ -92,6 +101,9 @@ describe('validateAccountRuntime', () => {
       [{ repositories: ['not-a-repo'] }, /must be owner\/repo/],
       [{ mcp: { command: '', args: ['x'], env: {}, cwd: '' } }, /mcp\.command is required/],
       [{ mcp: { command: 'x', args: [], env: {}, cwd: '' } }, /mcp\.args is required/],
+      [{ baseUrl: '', mcp: { command: 'x', args: ['y'], env: {}, cwd: '' } }, /baseUrl is required/],
+      [{ baseUrl: 'ftp://example.com', mcp: { command: 'x', args: ['y'], env: {}, cwd: '' } }, /baseUrl must be http\(s\)/],
+      [{ webUrl: 'not a url', mcp: { command: 'x', args: ['y'], env: {}, cwd: '' } }, /webUrl is not a valid URL/],
     ]
     for (const [patch, expected] of cases) {
       const normalized = normalizeAccountConfig({ ...base, ...patch } as AccountConfig)

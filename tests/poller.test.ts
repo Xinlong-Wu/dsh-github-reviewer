@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ResolvedAccountConfig } from '../src/config.ts'
+import { GitHubRateLimitError } from '../src/github/client.ts'
 import type { GitHubClient } from '../src/github/client.ts'
 import type { PullRequest } from '../src/github/model.ts'
 import { AccountPoller, recordingLogger } from '../src/poller.ts'
@@ -26,7 +27,14 @@ const account: ResolvedAccountConfig = {
   webUrl: 'https://github.com',
   pollIntervalMs: 120_000,
   repositories: ['owner/repo'],
-  review: { maxToolCalls: 30, toolTimeoutMs: 5000, toolResultLimit: 60000, timeoutMs: 30_000, defaultInstructions: '' },
+  review: {
+    maxToolCalls: 30,
+    toolTimeoutMs: 5000,
+    toolResultLimit: 60000,
+    timeoutMs: 30_000,
+    defaultInstructions: '',
+    commandAuthorAssociations: ['OWNER', 'MEMBER', 'COLLABORATOR'],
+  },
   mcp: { command: 'github-mcp-server', args: ['stdio'], env: {}, cwd: '' },
 }
 
@@ -36,16 +44,31 @@ interface FakeReviewComment {
   id: number
   body: string
   user: { login: string; type: string }
+  authorAssociation: string
   createdAt: Date
   htmlUrl: string
   path: string
   inReplyTo: number
 }
 
+interface FakeIssueComment {
+  id: number
+  body: string
+  user: { login: string; type: string }
+  authorAssociation: string
+  createdAt: Date
+  htmlUrl: string
+}
+
+/** Shorthand for an authorized (OWNER) issue comment. */
+function issueComment(id: number, body: string, createdAt = new Date()): FakeIssueComment {
+  return { id, body, user: { login: 'alice', type: 'User' }, authorAssociation: 'OWNER', createdAt, htmlUrl: 'u' }
+}
+
 interface FakeClient {
   prs: PullRequest[]
   instructions: { text: string; source: string } | 'missing'
-  issueComments: Array<{ id: number; body: string; user: { login: string; type: string }; createdAt: Date; htmlUrl: string }>
+  issueComments: FakeIssueComment[]
   reviewComments: FakeReviewComment[]
   issueCommentCalls: string[]
   reviewReplyCalls: Array<{ commentId: number; body: string }>
@@ -210,7 +233,7 @@ describe('AccountPoller review flow', () => {
     expect(lines.some(line => line.includes('falling back to config default_instructions'))).toBe(true)
   })
 
-  it('does not mark the cursor when the review did not submit a COMMENT review', async () => {
+  it('records a failure (with backoff state) when the review did not submit a COMMENT review', async () => {
     const c = fakeClient()
     c.prs = [pr]
     const driver: ReviewDriver = {
@@ -223,8 +246,38 @@ describe('AccountPoller review flow', () => {
 
     await poller.pollOnce(signal)
     const state = await store.load()
-    expect(state.prs['owner/repo#42']).toBeUndefined()
+    const entry = state.prs['owner/repo#42']
+    expect(entry?.status).toBeUndefined()
+    expect(entry?.failCount).toBe(1)
+    expect(entry?.lastFailedSHA).toBe('head-sha')
     expect(lines.some(line => line.includes('completed without COMMENT submission'))).toBe(true)
+    await poller.dispose()
+  })
+
+  it('backs off repeated failures against the same head SHA and retries after a new push', async () => {
+    const c = fakeClient()
+    c.prs = [pr]
+    const driver: ReviewDriver = {
+      driveReview: async () => { throw new Error('loop down') },
+      driveChat: async () => '',
+      dispose: async () => {},
+    }
+    const lines: string[] = []
+    const poller = buildPoller(c, driver, lines, { text: 'trusted', source: 'x' })
+
+    await poller.pollOnce(signal)
+    // Second tick: the same SHA is in backoff, so no new attempt is made.
+    await poller.pollOnce(signal)
+    let state = await store.load()
+    expect(state.prs['owner/repo#42'].failCount).toBe(1)
+    expect(lines.some(line => line.includes('backing off'))).toBe(true)
+
+    // A new head SHA resets the backoff and retries immediately.
+    c.prs = [{ ...pr, head: { ...pr.head, sha: 'head-sha-2' } }]
+    await poller.pollOnce(signal)
+    state = await store.load()
+    expect(state.prs['owner/repo#42'].failCount).toBe(1)
+    expect(state.prs['owner/repo#42'].lastFailedSHA).toBe('head-sha-2')
     await poller.dispose()
   })
 })
@@ -242,9 +295,7 @@ describe('AccountPoller comment commands', () => {
     const poller = reviewedPoller(c, driver, lines)
     await poller.pollOnce(signal)
 
-    c.issueComments = [
-      { id: 9, body: '/bot explain this', user: { login: 'alice', type: 'User' }, createdAt: new Date(), htmlUrl: 'u' },
-    ]
+    c.issueComments = [issueComment(9, '/bot explain this')]
     await poller.pollOnce(signal)
     await poller.dispose()
 
@@ -254,25 +305,105 @@ describe('AccountPoller comment commands', () => {
     expect(lines.some(line => line.includes('github bot chat triggered by comment'))).toBe(true)
   })
 
-  it('triggers a re-review on /review and skips later comments', async () => {
+  it('triggers a re-review on /review and still answers later comments', async () => {
     const c = fakeClient()
     c.prs = [pr]
-    const { driver, reviewCalls } = fakeDriver()
+    const { driver, reviewCalls, chatCalls } = fakeDriver()
     const lines: string[] = []
     const poller = reviewedPoller(c, driver, lines)
     await poller.pollOnce(signal)
     const firstCalls = reviewCalls.length
 
     c.issueComments = [
-      { id: 1, body: '/review', user: { login: 'alice', type: 'User' }, createdAt: new Date(), htmlUrl: 'u' },
-      { id: 2, body: '/bot ignored', user: { login: 'bob', type: 'User' }, createdAt: new Date(), htmlUrl: 'u' },
+      issueComment(1, '/review', new Date(Date.now() + 1000)),
+      { ...issueComment(2, '/bot still answer me'), user: { login: 'bob', type: 'User' } },
     ]
     await poller.pollOnce(signal)
     await poller.dispose()
 
     expect(reviewCalls.length).toBeGreaterThan(firstCalls)
+    expect(chatCalls).toHaveLength(1)
+    expect(c.issueCommentCalls).toEqual(['The reply.'])
+    expect(lines.some(line => line.includes('github review submitted'))).toBe(true)
+  })
+
+  it('ignores commands from commenters without an allowed author association', async () => {
+    const c = fakeClient()
+    c.prs = [pr]
+    const { driver, reviewCalls, chatCalls } = fakeDriver()
+    const lines: string[] = []
+    const poller = reviewedPoller(c, driver, lines)
+    await poller.pollOnce(signal)
+    const firstReviewCalls = reviewCalls.length
+
+    c.issueComments = [
+      { ...issueComment(7, '/review'), authorAssociation: 'NONE', user: { login: 'stranger', type: 'User' } },
+      { ...issueComment(8, '/bot hi'), authorAssociation: 'FIRST_TIME_CONTRIBUTOR', user: { login: 'newbie', type: 'User' } },
+    ]
+    await poller.pollOnce(signal)
+    await poller.dispose()
+
+    expect(reviewCalls).toHaveLength(firstReviewCalls)
+    expect(chatCalls).toHaveLength(0)
     expect(c.issueCommentCalls).toHaveLength(0)
-    expect(lines.some(line => line.includes('github re-review submitted'))).toBe(true)
+    expect(lines.some(line => line.includes('ignoring github comment command from unauthorized author'))).toBe(true)
+  })
+
+  it('does not reprocess the boundary comment on the next tick', async () => {
+    const c = fakeClient()
+    c.prs = [pr]
+    const { driver, chatCalls } = fakeDriver()
+    const lines: string[] = []
+    const poller = reviewedPoller(c, driver, lines)
+    await poller.pollOnce(signal)
+
+    const commentAt = new Date()
+    const comment = issueComment(11, '/bot hello', commentAt)
+    c.issueComments = [comment]
+    await poller.pollOnce(signal)
+    expect(chatCalls).toHaveLength(1)
+
+    // The client-side boundary is the comment's createdAt; GitHub's inclusive
+    // `since` would return the same comment again, so the poller must filter it.
+    const state = await store.load()
+    expect(state.prs['owner/repo#42'].lastCommentCheck).toBe(commentAt.toISOString())
+    await poller.pollOnce(signal)
+    await poller.dispose()
+    expect(chatCalls).toHaveLength(1)
+    expect(c.issueCommentCalls).toHaveLength(1)
+  })
+
+  it('does not replay already-answered comments when a later reply fails mid-batch', async () => {
+    const c = fakeClient()
+    c.prs = [pr]
+    const { driver, chatCalls } = fakeDriver()
+    const lines: string[] = []
+    const poller = reviewedPoller(c, driver, lines)
+    await poller.pollOnce(signal)
+
+    c.issueComments = [
+      issueComment(20, '/bot first', new Date(Date.now() + 1000)),
+      issueComment(21, '/bot second', new Date(Date.now() + 2000)),
+    ]
+    const originalCreate = c.createIssueComment.bind(c)
+    let calls = 0
+    c.createIssueComment = async (repo, number, body, sig) => {
+      calls++
+      if (calls === 2) throw new Error('post failed')
+      return originalCreate(repo, number, body, sig)
+    }
+    await poller.pollOnce(signal)
+    expect(chatCalls).toHaveLength(2)
+    expect(c.issueCommentCalls).toEqual(['The reply.'])
+    expect(lines.some(line => line.includes('github bot chat failed'))).toBe(true)
+
+    // Next tick: the answered comment is not re-answered, and the failed one
+    // is not retried either (processed ids are recorded to avoid retry storms;
+    // the user can re-comment to retry).
+    await poller.pollOnce(signal)
+    await poller.dispose()
+    expect(chatCalls).toHaveLength(2)
+    expect(c.issueCommentCalls).toEqual(['The reply.'])
   })
 
   it('replies to review-thread comments in their thread', async () => {
@@ -285,7 +416,7 @@ describe('AccountPoller comment commands', () => {
 
     c.issueComments = []
     c.reviewComments = [
-      { id: 5, body: '/bot details?', user: { login: 'alice', type: 'User' }, createdAt: new Date(), htmlUrl: 'u', path: 'a.ts', inReplyTo: 0 },
+      { id: 5, body: '/bot details?', user: { login: 'alice', type: 'User' }, authorAssociation: 'MEMBER', createdAt: new Date(), htmlUrl: 'u', path: 'a.ts', inReplyTo: 0 },
     ]
     await poller.pollOnce(signal)
     await poller.dispose()
@@ -303,7 +434,7 @@ describe('AccountPoller comment commands', () => {
     const firstReviewCalls = reviewCalls.length
 
     c.issueComments = [
-      { id: 3, body: '/bot hi', user: { login: 'ghost', type: 'Bot' }, createdAt: new Date(), htmlUrl: 'u' },
+      { ...issueComment(3, '/bot hi'), user: { login: 'ghost', type: 'Bot' } },
     ]
     await poller.pollOnce(signal)
     await poller.dispose()
@@ -329,7 +460,7 @@ describe('AccountPoller failure paths', () => {
     expect(lines.some(line => line.includes('list github pull requests failed'))).toBe(true)
   })
 
-  it('marks missing instructions when reading them fails', async () => {
+  it('does not touch the cursor when reading instructions fails transiently', async () => {
     const c = fakeClient()
     c.prs = [pr]
     c.reviewInstructions = async () => { throw new Error('api down') }
@@ -338,14 +469,21 @@ describe('AccountPoller failure paths', () => {
     const poller = buildPoller(c, driver, lines)
 
     await poller.pollOnce(signal)
-    const state = await store.load()
-    expect(state.prs['owner/repo#42'].status).toBe('missing_instructions')
+    let state = await store.load()
+    expect(state.prs['owner/repo#42']).toBeUndefined()
     expect(reviewCalls).toHaveLength(0)
     expect(lines.some(line => line.includes('read github review instructions failed'))).toBe(true)
+
+    // The next tick retries: transient errors are not recorded in the cursor.
+    c.reviewInstructions = async () => ({ ok: true, instructions: { text: 'trusted', source: 'x' } })
+    await poller.pollOnce(signal)
+    state = await store.load()
+    expect(reviewCalls).toHaveLength(1)
+    expect(state.prs['owner/repo#42'].status).toBe('reviewed')
     await poller.dispose()
   })
 
-  it('surfaces a review driver failure without marking the cursor', async () => {
+  it('surfaces a review driver failure by recording backoff state', async () => {
     const c = fakeClient()
     c.prs = [pr]
     const driver: ReviewDriver = {
@@ -358,7 +496,9 @@ describe('AccountPoller failure paths', () => {
 
     await poller.pollOnce(signal)
     const state = await store.load()
-    expect(state.prs['owner/repo#42']).toBeUndefined()
+    const entry = state.prs['owner/repo#42']
+    expect(entry?.status).toBeUndefined()
+    expect(entry?.failCount).toBe(1)
     expect(lines.some(line => line.includes('github review failed'))).toBe(true)
     await poller.dispose()
   })
@@ -390,13 +530,57 @@ describe('AccountPoller failure paths', () => {
     const poller = buildPoller(c, driver, lines, { text: 'trusted', source: 'x' })
     await poller.pollOnce(signal)
 
-    c.issueComments = [
-      { id: 9, body: '/bot explain this', user: { login: 'alice', type: 'User' }, createdAt: new Date(), htmlUrl: 'u' },
-    ]
+    c.issueComments = [issueComment(9, '/bot explain this')]
     await poller.pollOnce(signal)
     await poller.dispose()
 
     expect(c.issueCommentCalls).toHaveLength(0)
     expect(lines.some(line => line.includes('github bot chat failed'))).toBe(true)
+  })
+
+  it('stops the tick early when the API is rate limited', async () => {
+    const c = fakeClient()
+    c.listOpenPullRequests = async () => {
+      throw new GitHubRateLimitError('GET', '/repos/owner/repo/pulls', 429, 'limited', 60)
+    }
+    const { driver } = fakeDriver()
+    const lines: string[] = []
+    const poller = buildPoller(c, driver, lines, { text: 'trusted', source: 'x' })
+
+    await poller.pollOnce(signal)
+    await poller.dispose()
+
+    expect(lines.some(line => line.includes('github rate limited') && line.includes('retry_after_s=60'))).toBe(true)
+  })
+
+  it('dispose waits for an in-flight tick to finish', async () => {
+    const c = fakeClient()
+    c.prs = [pr]
+    let releaseReview: (() => void) | undefined
+    let reviewStarted: (() => void) | undefined
+    const reviewGate = new Promise<void>(resolve => { releaseReview = resolve })
+    const reviewEntered = new Promise<void>(resolve => { reviewStarted = resolve })
+    let disposeResolvedWhileInFlight = false
+    const driver: ReviewDriver = {
+      driveReview: async () => {
+        reviewStarted?.()
+        await reviewGate
+        return { submitted: true, text: 'ok' }
+      },
+      driveChat: async () => '',
+      dispose: async () => {},
+    }
+    const lines: string[] = []
+    const poller = buildPoller(c, driver, lines, { text: 'trusted', source: 'x' })
+
+    poller.start()
+    // Wait until the immediate tick is actually blocked inside driveReview.
+    await reviewEntered
+    const disposed = poller.dispose().then(() => { disposeResolvedWhileInFlight = true })
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(disposeResolvedWhileInFlight).toBe(false)
+    releaseReview?.()
+    await disposed
+    expect(disposeResolvedWhileInFlight).toBe(true)
   })
 })

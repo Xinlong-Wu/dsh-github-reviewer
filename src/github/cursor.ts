@@ -1,7 +1,8 @@
 /**
  * Review cursor: durable per-account state that decides which PRs need a
  * review and how far comment polling has reached. Ported from LingoBridge's
- * `sync_cursors` buffer, backed here by one JSON file per account.
+ * `sync_cursors` buffer, persisted as one storage-domain record per account
+ * (see `src/cursor-store.ts`).
  * @module
  */
 
@@ -18,18 +19,37 @@ export type CursorStatus =
   | typeof CURSOR_STATUS_REVIEWED
   | typeof CURSOR_STATUS_MISSING_INSTRUCTIONS
 
+/** Upper bound for the review-failure backoff delay. */
+export const MAX_REVIEW_FAILURE_BACKOFF_MS = 30 * 60_000
+
 /** Per-PR cursor entry. */
 export interface CursorEntry {
   /** Head SHA the entry was recorded against. */
   headSHA: string
-  status: CursorStatus
+  /** Terminal status; absent when no terminal status was reached yet (e.g. only failures so far). */
+  status?: CursorStatus
   /** RFC 3339 timestamp of the last status update. */
   updatedAt?: string
   /** RFC 3339 timestamp of the last comment poll. */
   lastCommentCheck?: string
+  /** Head SHA of the last failed review attempt, when it differs from a terminal status. */
+  lastFailedSHA?: string
+  /** Consecutive failed review attempts against {@link CursorEntry.lastFailedSHA}. */
+  failCount?: number
+  /** RFC 3339 timestamp of the last failed review attempt. */
+  lastFailedAt?: string
+  /**
+   * Recently processed comment keys (`issue:<id>` / `review:<id>`), capped at
+   * {@link MAX_PROCESSED_COMMENT_IDS}. GitHub timestamps are second-granular,
+   * so time-only dedupe would drop or replay comments; this set dedupes across ticks.
+   */
+  processedCommentIds?: string[]
 }
 
-/** Whole cursor file: PR entries keyed by `owner/repo#number`. */
+/** Cap for {@link CursorEntry.processedCommentIds}. */
+export const MAX_PROCESSED_COMMENT_IDS = 50
+
+/** Whole cursor record: PR entries keyed by `owner/repo#number`. */
 export interface CursorState {
   prs: Record<string, CursorEntry>
 }
@@ -58,7 +78,8 @@ export function shouldProcessCursor(state: CursorState, pr: PullRequest): boolea
 }
 
 /**
- * Record a terminal review status for a PR, resetting the comment-check clock.
+ * Record a terminal review status for a PR, resetting the comment-check clock
+ * and clearing any recorded review-failure state.
  * @param state - cursor to update in place.
  * @param pr - the pull request.
  * @param status - terminal status to record.
@@ -72,6 +93,46 @@ export function markCursor(state: CursorState, pr: PullRequest, status: CursorSt
     updatedAt: nowStr,
     lastCommentCheck: nowStr,
   }
+}
+
+/**
+ * Record a failed review attempt against the current head SHA, preserving any
+ * terminal status the entry already carries. Consecutive failures against the
+ * same SHA accumulate {@link CursorEntry.failCount} for backoff.
+ * @param state - cursor to update in place.
+ * @param pr - the pull request whose review failed.
+ * @param now - current instant.
+ */
+export function markReviewFailure(state: CursorState, pr: PullRequest, now: Date): void {
+  const failedSHA = pr.head.sha.trim()
+  const entry = state.prs[cursorKey(pr)]
+  const failCount = entry !== undefined && entry.lastFailedSHA === failedSHA ? (entry.failCount ?? 0) + 1 : 1
+  state.prs[cursorKey(pr)] = {
+    ...entry,
+    headSHA: entry?.headSHA ?? failedSHA,
+    lastFailedSHA: failedSHA,
+    failCount,
+    lastFailedAt: now.toISOString(),
+  }
+}
+
+/**
+ * Whether a failed review of the current head SHA is still backing off. The
+ * delay doubles per consecutive failure (`2^failCount * baseDelayMs`), capped
+ * at {@link MAX_REVIEW_FAILURE_BACKOFF_MS}.
+ * @param entry - the PR cursor entry, if any.
+ * @param pr - the pull request under consideration.
+ * @param now - current instant.
+ * @param baseDelayMs - base delay unit, typically the account's poll interval.
+ */
+export function reviewBackoffActive(entry: CursorEntry | undefined, pr: PullRequest, now: Date, baseDelayMs: number): boolean {
+  if (entry === undefined || entry.lastFailedAt === undefined) return false
+  if (entry.lastFailedSHA !== pr.head.sha.trim()) return false
+  const failedAt = new Date(entry.lastFailedAt)
+  if (Number.isNaN(failedAt.getTime())) return false
+  const exponent = Math.min(entry.failCount ?? 1, 10)
+  const delay = Math.min(2 ** exponent * baseDelayMs, MAX_REVIEW_FAILURE_BACKOFF_MS)
+  return now.getTime() - failedAt.getTime() < delay
 }
 
 /**
@@ -103,38 +164,17 @@ export function markCommentCheck(state: CursorState, pr: Pick<PullRequest, 'numb
 }
 
 /**
- * Decode a raw cursor file body into cursor state.
- * @param body - raw JSON file content.
- * @returns the decoded state; an empty body decodes to an empty cursor.
- * @throws when the JSON is malformed.
+ * Record a processed comment id for cross-tick dedupe, keeping only the most
+ * recent {@link MAX_PROCESSED_COMMENT_IDS} entries.
+ * @param state - cursor to update in place.
+ * @param pr - the pull request.
+ * @param idKey - the scoped comment key, e.g. `issue:123` or `review:456`.
  */
-export function decodeCursor(body: string): CursorState {
-  if (body.trim() === '') return emptyCursorState()
-  const parsed = JSON.parse(body) as Partial<CursorState>
-  if (typeof parsed !== 'object' || parsed === null) throw new Error('github reviewer cursor is not a JSON object')
-  const prs = parsed.prs
-  if (prs === undefined) return emptyCursorState()
-  if (typeof prs !== 'object' || prs === null || Array.isArray(prs)) {
-    throw new Error('github reviewer cursor "prs" is not a JSON object')
-  }
-  return { prs: prs as CursorState['prs'] }
-}
-
-/**
- * Encode cursor state as the file body.
- * @param state - cursor to encode.
- * @returns stable JSON with sorted keys.
- */
-export function encodeCursor(state: CursorState): string {
-  const prs: Record<string, CursorEntry> = {}
-  for (const key of Object.keys(state.prs).sort()) {
-    const entry = state.prs[key]
-    prs[key] = {
-      headSHA: entry.headSHA,
-      status: entry.status,
-      ...entry.updatedAt === undefined ? {} : { updatedAt: entry.updatedAt },
-      ...entry.lastCommentCheck === undefined ? {} : { lastCommentCheck: entry.lastCommentCheck },
-    }
-  }
-  return `${JSON.stringify({ prs }, null, 2)}\n`
+export function recordProcessedComment(state: CursorState, pr: Pick<PullRequest, 'number' | 'base'>, idKey: string): void {
+  const entry = state.prs[cursorKey(pr)]
+  if (entry === undefined) return
+  const ids = entry.processedCommentIds ?? []
+  if (!ids.includes(idKey)) ids.push(idKey)
+  while (ids.length > MAX_PROCESSED_COMMENT_IDS) ids.shift()
+  entry.processedCommentIds = ids
 }
