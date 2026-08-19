@@ -39,6 +39,7 @@ const account: ResolvedAccountConfig = {
     timeoutMs: 30_000,
     defaultInstructions: '',
     commandAuthorAssociations: ['OWNER', 'MEMBER', 'COLLABORATOR'],
+    models: [],
   },
   mcp: { command: 'github-mcp-server', args: ['stdio'], env: {}, cwd: '' },
 }
@@ -252,7 +253,7 @@ describe('AccountPoller review flow', () => {
     await poller.pollOnce(signal)
     const state = await store.load()
     const entry = state.prs['owner/repo#42']
-    expect(entry?.status).toBeUndefined()
+    expect(entry?.status).toBe('reviewing')
     expect(entry?.failCount).toBe(1)
     expect(entry?.lastFailedSHA).toBe('head-sha')
     expect(lines.some(line => line.includes('completed without COMMENT submission'))).toBe(true)
@@ -284,6 +285,44 @@ describe('AccountPoller review flow', () => {
     expect(state.prs['owner/repo#42'].failCount).toBe(1)
     expect(state.prs['owner/repo#42'].lastFailedSHA).toBe('head-sha-2')
     await poller.dispose()
+  })
+
+  it('persists the reviewing marker while a review is in flight', async () => {
+    const c = fakeClient()
+    c.prs = [pr]
+    const seen: Array<string | undefined> = []
+    const driver: ReviewDriver = {
+      driveReview: vi.fn(async () => {
+        seen.push((await store.load()).prs['owner/repo#42']?.status)
+        return { submitted: true, text: 'done' }
+      }),
+      driveChat: async () => '',
+      dispose: async () => {},
+    }
+    const lines: string[] = []
+    const poller = buildPoller(c, driver, lines, { text: 'trusted', source: 'x' })
+    await poller.pollOnce(signal)
+    await poller.dispose()
+    expect(seen).toEqual(['reviewing'])
+    expect((await store.load()).prs['owner/repo#42'].status).toBe('reviewed')
+  })
+
+  it('leaves an interrupted review marked reviewing with failure state', async () => {
+    const c = fakeClient()
+    c.prs = [pr]
+    const driver: ReviewDriver = {
+      driveReview: async () => { throw new Error('process died mid-review') },
+      driveChat: async () => '',
+      dispose: async () => {},
+    }
+    const lines: string[] = []
+    const poller = buildPoller(c, driver, lines, { text: 'trusted', source: 'x' })
+    await poller.pollOnce(signal)
+    await poller.dispose()
+    const entry = (await store.load()).prs['owner/repo#42']
+    expect(entry.status).toBe('reviewing')
+    expect(entry.failCount).toBe(1)
+    expect(entry.lastFailedSHA).toBe('head-sha')
   })
 })
 
@@ -502,7 +541,7 @@ describe('AccountPoller failure paths', () => {
     await poller.pollOnce(signal)
     const state = await store.load()
     const entry = state.prs['owner/repo#42']
-    expect(entry?.status).toBeUndefined()
+    expect(entry?.status).toBe('reviewing')
     expect(entry?.failCount).toBe(1)
     expect(lines.some(line => line.includes('github review failed'))).toBe(true)
     await poller.dispose()

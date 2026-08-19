@@ -13,11 +13,20 @@ import { fullName } from './model.ts'
 export const CURSOR_STATUS_REVIEWED = 'reviewed'
 /** A PR whose review instructions were missing: retry only when the head SHA changes. */
 export const CURSOR_STATUS_MISSING_INSTRUCTIONS = 'missing_instructions'
+/**
+ * A PR whose review was started but not finished: the poller records this
+ * before driving the review turn. A live process never observes it mid-review
+ * (ticks are serialized), so a persisted `reviewing` entry means the last
+ * review was interrupted — the next tick re-runs the review, which resumes
+ * the PR's persisted session and continues the remaining work.
+ */
+export const CURSOR_STATUS_REVIEWING = 'reviewing'
 
 /** Valid `status` values on a {@link CursorEntry}. */
 export type CursorStatus =
   | typeof CURSOR_STATUS_REVIEWED
   | typeof CURSOR_STATUS_MISSING_INSTRUCTIONS
+  | typeof CURSOR_STATUS_REVIEWING
 
 /** Upper bound for the review-failure backoff delay. */
 export const MAX_REVIEW_FAILURE_BACKOFF_MS = 30 * 60_000
@@ -74,6 +83,8 @@ export function shouldProcessCursor(state: CursorState, pr: PullRequest): boolea
   const entry = state.prs[cursorKey(pr)]
   if (entry === undefined) return true
   if (entry.headSHA.trim() !== pr.head.sha.trim()) return true
+  // `reviewing` (interrupted review) and status-less failure entries both
+  // still need processing; only terminal states are skipped.
   return entry.status !== CURSOR_STATUS_REVIEWED && entry.status !== CURSOR_STATUS_MISSING_INSTRUCTIONS
 }
 
@@ -92,6 +103,24 @@ export function markCursor(state: CursorState, pr: PullRequest, status: CursorSt
     status,
     updatedAt: nowStr,
     lastCommentCheck: nowStr,
+  }
+}
+
+/**
+ * Record that a review attempt is starting, preserving any failure/backoff
+ * state so a failed attempt still escalates the backoff on the same SHA.
+ * @param state - cursor to update in place.
+ * @param pr - the pull request being reviewed.
+ * @param now - current instant.
+ */
+export function markReviewing(state: CursorState, pr: PullRequest, now: Date): void {
+  const entry = state.prs[cursorKey(pr)]
+  state.prs[cursorKey(pr)] = {
+    ...entry,
+    headSHA: entry?.headSHA ?? pr.head.sha.trim(),
+    status: CURSOR_STATUS_REVIEWING,
+    updatedAt: now.toISOString(),
+    lastCommentCheck: now.toISOString(),
   }
 }
 

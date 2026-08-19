@@ -206,6 +206,7 @@ Multiple accounts = another plugin instance with the same `name`, each running i
 | `review.timeoutMs` | `900000` | Overall deadline for one turn; the agent is cancelled past it |
 | `review.defaultInstructions` | — | Fallback instructions used only when `.github/review_instructions.md` is missing from the base repository |
 | `review.commandAuthorAssociations` | `['OWNER','MEMBER','COLLABORATOR']` | GitHub `author_association` values allowed to trigger `/review` and `/bot` commands (case-insensitive); `['*']` allows everyone, an empty array allows no one |
+| `review.models` | `[]` (use the deployment default) | Ordered review-model candidates `[{provider, model}]`; the first candidate whose provider is mounted and whose model appears in that provider's catalog wins. Activation fails loudly when none is available. Empty uses the deployment's `agentDefaultModel` |
 | `mcp.command` | — | Command used to start the per-turn GitHub MCP server (required) |
 | `mcp.args` | — | Arguments for the server; include explicit `--tools=...` (strongly recommended; the guard filters out tools not listed) |
 | `mcp.env` | `{}` | Extra MCP server environment variables; GitHub tokens are injected automatically |
@@ -259,8 +260,9 @@ Each account runs its own poll loop (an immediate pass, then every `pollInterval
 
 - New PR or changed `head.sha` → run a review.
 - Reviewed or `missing_instructions` PR with an unchanged SHA → poll comments for `/review` and `/bot` commands.
+- A PR in the `reviewing` state → the last review was interrupted (process crash/kill): the next tick re-runs the review, resuming the PR's persisted session to finish the remaining work; failed attempts back off instead of spinning.
 
-Cursor state lives in the harness storage domain (`dsh_github_reviewer` domain, `accounts` table, one record per account), persisted by whichever backend the deployment routes to the domain — JSON files with `dsh-storage-json`, or a real SQLite database with `dsh-storage-sqlite`.
+Cursor state lives in the harness storage domain (`dsh_github_reviewer` domain, `accounts` table, one record per account), persisted by whichever backend the deployment routes to the domain — JSON files with `dsh-storage-json`, or a real SQLite database with `dsh-storage-sqlite`. Each PR's `status` is one of `reviewed` (COMMENT review submitted), `missing_instructions` (no trusted instructions; retried only on head change), or `reviewing` (review in flight/interrupted; resumed on the next poll).
 
 ### Per-PR agent and session
 

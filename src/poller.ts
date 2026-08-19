@@ -19,6 +19,7 @@ import {
   markCommentCheck,
   markCursor,
   markReviewFailure,
+  markReviewing,
   recordProcessedComment,
   reviewBackoffActive,
   shouldProcessCursor,
@@ -267,6 +268,12 @@ export class AccountPoller {
       return
     }
     const instructions = resolved.instructions
+    // Persist the in-review marker before driving the turn: a live process
+    // never observes it mid-review (ticks are serialized), so finding
+    // `reviewing` after a restart means the last review was interrupted and
+    // must be continued (the PR's persisted session resumes the remaining work).
+    markReviewing(state, pr, new Date())
+    await this.deps.store.save(state)
     let outcome: { submitted: boolean; text: string }
     try {
       this.logger.info(

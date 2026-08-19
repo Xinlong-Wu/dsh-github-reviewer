@@ -34,6 +34,11 @@ export interface AgentRunnerDeps {
   sessions: SessionStore
   /** Deployment-owned default model selection; every review agent uses it. */
   agentDefaultModel: { currentSelection(): ModelSelection }
+  /**
+   * Resolved model override from `review.models` (first available candidate).
+   * When present it wins over `agentDefaultModel.currentSelection()`.
+   */
+  modelOverride?: { provider: string; model: string }
   /** Durable session storage; absent in compositions without a persistence provider. */
   sessionPersistence?: SessionPersistence
   tokenSource: TokenSource
@@ -170,7 +175,7 @@ export class AgentRunner {
 
     const toolSchemas = await this.fetchToolSchemas(signal)
     const sessionId = SessionId(key)
-    const selection = this.deps.agentDefaultModel.currentSelection()
+    const selection = this.deps.modelOverride ?? this.deps.agentDefaultModel.currentSelection()
     const agentOptions = { provider: selection.provider, model: selection.model }
     const setup = (agentCtx: Context): void => {
       // The review world is a closed tool set, like LingoBridge's guarded-only

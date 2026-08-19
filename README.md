@@ -203,6 +203,7 @@ dsh --profile web --dump-config   # 打印组合后的完整插件树，确认 g
 | `review.timeoutMs` | `900000` | 单回合总截止时间；超时后取消 agent |
 | `review.defaultInstructions` | — | 仅当基础仓库缺少 `.github/review_instructions.md` 时使用的兜底指令 |
 | `review.commandAuthorAssociations` | `['OWNER','MEMBER','COLLABORATOR']` | 允许触发 `/review`、`/bot` 命令的评论作者身份（GitHub `author_association` 值，大小写不敏感）；`['*']` 允许所有人，空数组禁止所有人 |
+| `review.models` | `[]`（用部署默认模型） | 评审模型的候选列表 `[{provider, model}]`，按顺序取第一个「provider 已挂载且模型在目录中」的候选；全部不可用时激活报错。留空则用部署的 `agentDefaultModel` |
 | `mcp.command` | — | 启动每回合 GitHub MCP server 的命令（必填） |
 | `mcp.args` | — | server 参数；请显式包含 `--tools=...`（强烈建议；守卫会过滤未列出的工具） |
 | `mcp.env` | `{}` | 额外的 MCP server 环境变量；GitHub 令牌自动注入 |
@@ -256,8 +257,9 @@ patch 文件（`cordis.patch.yml`、`--patch` 覆盖层、bundle）里的配置�
 
 - 新 PR 或 `head.sha` 变化 → 执行评审。
 - 已评审或 `missing_instructions` 且 SHA 未变化 → 轮询评论中的 `/review` 与 `/bot` 命令。
+- 处于 `reviewing` 状态 → 上次评审被中断（进程崩溃/被杀）：重新触发评审，agent 从持久化的同一 PR 会话恢复，继续完成剩余部分；失败尝试带退避，不会空转。
 
-游标状态存放在 harness 的存储域中（`dsh_github_reviewer` 域、`accounts` 表、每账户一条记录），由部署路由到的后端持久化——挂 `dsh-storage-json` 时是 JSON 文件，挂 `dsh-storage-sqlite` 时就是真正的 SQLite 数据库。
+游标状态存放在 harness 的存储域中（`dsh_github_reviewer` 域、`accounts` 表、每账户一条记录），由部署路由到的后端持久化——挂 `dsh-storage-json` 时是 JSON 文件，挂 `dsh-storage-sqlite` 时就是真正的 SQLite 数据库。每个 PR 的 `status` 取值：`reviewed`（已提交 COMMENT 评审）、`missing_instructions`（无可信指令，head 变化才重试）、`reviewing`（评审进行中/被中断，下次轮询续跑）。
 
 ### 每 PR 的 Agent 与会话
 
