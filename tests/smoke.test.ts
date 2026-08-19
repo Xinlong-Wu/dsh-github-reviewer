@@ -214,6 +214,40 @@ describe('plugin wiring through a real Cordis context', () => {
     expect(fiber.state).toBe(4)
   })
 
+  it('registers the workspace eagerly when the loader declares the workspace service', async () => {
+    const keyPath = await tempKeyPath()
+    const create = vi.fn(async () => ({}))
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', { status: 200 })))
+    const ctx = new Context()
+    provideCoreServices(ctx)
+    ctx.provide('loader', {
+      entries: () => [{ disabled: false, options: { id: 'workspace', name: '@deepseek-ai/dsh-workspace' } }],
+    })
+    ctx.provide('workspace', { create })
+    const fiber = await ctx.plugin(plugin, validConfig(keyPath, { workspaceDir: join(dir, 'ws') }))
+    await vi.waitFor(() => expect(create).toHaveBeenCalled())
+    expect(create).toHaveBeenCalledWith(join(dir, 'ws'), 'GithubReviewer')
+    await fiber.dispose()
+    expect(fiber.state).toBe(4)
+  })
+
+  it('skips the workspace dir and registration when the loader does not declare it', async () => {
+    const keyPath = await tempKeyPath()
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', { status: 200 })))
+    const ctx = new Context()
+    provideCoreServices(ctx)
+    ctx.provide('loader', {
+      entries: () => [{ disabled: false, options: { id: 'other', name: '@deepseek-ai/dsh-other' } }],
+    })
+    const fiber = await ctx.plugin(plugin, validConfig(keyPath, { workspaceDir: join(dir, 'ws') }))
+    await vi.waitFor(() => expect(fiber.state).toBe(2)) // FiberState.ACTIVE
+    // No eager mkdir, no registration, no retry: the dir appears only when a
+    // session is actually created (none here), and no workspace service exists.
+    await expect(access(join(dir, 'ws'))).rejects.toThrow()
+    await fiber.dispose()
+    expect(fiber.state).toBe(4)
+  })
+
   it('activates with review.models configured; model resolution is deferred to session creation', async () => {
     const keyPath = await tempKeyPath()
     vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', { status: 200 })))

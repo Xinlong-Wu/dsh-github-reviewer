@@ -153,6 +153,8 @@ interface MakeRunnerOptions {
     get: ReturnType<typeof vi.fn>
     rename: ReturnType<typeof vi.fn>
   }
+  /** Workspace pre-creation hook. */
+  ensureWorkspace?: () => Promise<void>
 }
 
 function makeRunner(world: World, sessionPersistence?: { listSnapshots: () => Promise<Array<{ header: { id: string } }>> }, options: MakeRunnerOptions = {}) {
@@ -167,6 +169,7 @@ function makeRunner(world: World, sessionPersistence?: { listSnapshots: () => Pr
     agentDefaultModel: { currentSelection: () => ({ provider: 'deepseek', model: 'deepseek-chat' }) },
     ...options.llm === undefined ? {} : { llm: options.llm },
     ...options.sessionTitle === undefined ? {} : { sessionTitle: options.sessionTitle },
+    ...options.ensureWorkspace === undefined ? {} : { ensureWorkspace: options.ensureWorkspace },
     sessions: { flush: vi.fn(async () => true) } as unknown as SessionStore,
     ...sessionPersistence === undefined ? {} : { sessionPersistence: sessionPersistence as never },
     tokenSource: { token: async () => 'tok' },
@@ -281,6 +284,27 @@ describe('AgentRunner agent lifecycle', () => {
       'does not mount the llm service',
     )
     expect(world.create).not.toHaveBeenCalled()
+    await runner.dispose()
+  })
+
+  it('ensures the workspace exists before creating the PR session', async () => {
+    const world = makeWorld()
+    const order: string[] = []
+    const baseCreate = world.create
+    world.create = vi.fn(async (options) => {
+      order.push('create')
+      return baseCreate(options)
+    })
+    const ensureWorkspace = vi.fn(async () => { order.push('ensureWorkspace') })
+    const { runner } = makeRunner(world, undefined, { ensureWorkspace })
+    const signal = new AbortController().signal
+
+    const reviewPromise = runner.driveReview(pr, { text: 'trusted', source: 'x' }, signal)
+    world.fakeHandle.resolveTurn()
+    await reviewPromise
+
+    expect(ensureWorkspace).toHaveBeenCalledTimes(1)
+    expect(order).toEqual(['ensureWorkspace', 'create'])
     await runner.dispose()
   })
 

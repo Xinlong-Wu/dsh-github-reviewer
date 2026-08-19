@@ -53,6 +53,12 @@ export interface AgentRunnerDeps {
     get(session: { id: string; events: readonly unknown[] }): { title?: string } | undefined
     rename(session: { id: string; events: readonly unknown[] }, title: string): unknown
   }
+  /**
+   * Called right before a PR agent/session is created or resumed: creates the
+   * review-session directory and registers the harness workspace when the
+   * `workspace` service is available. Best-effort, never rejects.
+   */
+  ensureWorkspace?: () => Promise<void>
   /** Durable session storage; absent in compositions without a persistence provider. */
   sessionPersistence?: SessionPersistence
   tokenSource: TokenSource
@@ -238,6 +244,7 @@ export class AgentRunner {
     }
 
     let handle: AgentHandle
+    await this.deps.ensureWorkspace?.()
     const persistence = this.deps.sessionPersistence
     if (persistence !== undefined) {
       const snapshots = await persistence.listSnapshots(signal)
