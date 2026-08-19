@@ -16,10 +16,13 @@
     }
   },
   "files": [
-    "lib/**/*"
+    "lib/**/*",
+    "cordis.yml.example"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "clean": "node -e \"fs.rmSync('lib',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc -p tsconfig.json",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "coverage": "vitest run --coverage",
