@@ -148,6 +148,11 @@ interface MakeRunnerOptions {
   hostFactory?: ((token: string, signal: AbortSignal) => Promise<McpHost>) | null
   /** Resolved model override from `review.models`. */
   modelOverride?: { provider: string; model: string }
+  /** Session-title service mock. */
+  sessionTitle?: {
+    get: ReturnType<typeof vi.fn>
+    rename: ReturnType<typeof vi.fn>
+  }
 }
 
 function makeRunner(world: World, sessionPersistence?: { listSnapshots: () => Promise<Array<{ header: { id: string } }>> }, options: MakeRunnerOptions = {}) {
@@ -161,6 +166,7 @@ function makeRunner(world: World, sessionPersistence?: { listSnapshots: () => Pr
     } as unknown as AgentRegistry,
     agentDefaultModel: { currentSelection: () => ({ provider: 'deepseek', model: 'deepseek-chat' }) },
     ...options.modelOverride === undefined ? {} : { modelOverride: options.modelOverride },
+    ...options.sessionTitle === undefined ? {} : { sessionTitle: options.sessionTitle },
     sessions: { flush: vi.fn(async () => true) } as unknown as SessionStore,
     ...sessionPersistence === undefined ? {} : { sessionPersistence: sessionPersistence as never },
     tokenSource: { token: async () => 'tok' },
@@ -203,6 +209,27 @@ describe('AgentRunner agent lifecycle', () => {
     expect((world.createOptions[0] as { agentOptions: unknown }).agentOptions).toEqual({ provider: 'deepseek', model: 'deepseek-chat' })
     await runner.dispose()
     expect(world.fakeHandle.handle.dispose).toHaveBeenCalledTimes(1)
+  })
+
+  it('pins a uniform session title for each PR, once', async () => {
+    const world = makeWorld()
+    let titled = false
+    const get = vi.fn(() => (titled ? { title: 'Review owner/repo PR 42' } : undefined))
+    const rename = vi.fn((_session: unknown, _title: string) => { titled = true; return {} })
+    const { runner } = makeRunner(world, undefined, { sessionTitle: { get, rename } })
+    const signal = new AbortController().signal
+
+    const review1 = runner.driveReview(pr, { text: 'trusted', source: 'x' }, signal)
+    world.fakeHandle.resolveTurn()
+    await review1
+    const chat = runner.driveChat(pr, 'what changed?', signal)
+    world.fakeHandle.resolveTurn()
+    await chat
+
+    // Review turn pins the title; the chat turn on the same session skips it.
+    expect(rename).toHaveBeenCalledTimes(1)
+    expect(rename).toHaveBeenCalledWith(expect.anything(), 'Review owner/repo PR 42')
+    await runner.dispose()
   })
 
   it('uses the resolved model override instead of the deployment default', async () => {

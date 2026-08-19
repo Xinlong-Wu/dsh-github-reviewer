@@ -107,9 +107,10 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
       }
     }
     ctx.effect(() => {
-      // Read the optional persistence service inside the effect so the wiring
-      // does not depend on plugin mount order at apply time.
+      // Read the optional services inside the effect so the wiring does not
+      // depend on plugin mount order at apply time.
       const sessionPersistence = ctx.get('sessionPersistence')
+      const sessionTitle = ctx.get('sessionTitle')
       const runner = new AgentRunner({
         accountName: account.name,
         account,
@@ -117,6 +118,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
         sessions: ctx.sessions,
         agentDefaultModel: ctx.agentDefaultModel,
         ...modelOverride === undefined ? {} : { modelOverride },
+        ...sessionTitle === undefined ? {} : { sessionTitle },
         ...sessionPersistence === undefined ? {} : { sessionPersistence },
         tokenSource,
         logger,

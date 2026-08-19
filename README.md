@@ -268,6 +268,8 @@ patch 文件（`cordis.patch.yml`、`--patch` 覆盖层、bundle）里的配置�
 - 若该 PR 会话已存在于 `sessionPersistence`，则以相同的 setup 世界 **恢复（resume）**（world = agent 创建时在其作用域上下文上注册的系统提示段与作用域工具的集合）。
 - 否则创建全新的 agent 与会话；会话 id 稳定，因此后续重启会恢复同一个 PR 对话。
 
+挂载了 `session-title` 服务（web profile 自带）时，会话标题统一钉为 `Review <owner>/<repo> PR <number>`（如 `Review Xinlong-Wu/dsh-github-reviewer PR 18`），自动标题生成不会覆盖它。
+
 agent setup 在未发布的 agent 上下文上注册「评审世界」：一个 `complete` 系统提示段（按回合在评审/聊天提示之间切换）、四个被守卫的 GitHub 工具（作用域工具定义），以及一条把**所有全局工具**从该 agent 隐藏的工具限制——模型只能看到封闭的评审工具集，与 LingoBridge 的「仅守卫工具」handler 一致。会话日志就是持久的每 PR 历史——后续回合经主循环重放它，检查点/压缩与交互式会话完全相同。
 
 ### 评审流程
