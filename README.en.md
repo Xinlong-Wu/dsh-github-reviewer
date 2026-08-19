@@ -207,6 +207,30 @@ Multiple accounts = another plugin instance with the same `name`, each running i
 | `mcp.env` | `{}` | Extra MCP server environment variables; GitHub tokens are injected automatically |
 | `mcp.cwd` | — | Optional working directory for the server |
 
+### JS expressions in the config file (`!!js`)
+
+Config values in patch files (`cordis.patch.yml`, `--patch` overlays, bundles) support the YAML `!!js` tag, evaluated synchronously at boot — usable in any field, including `disabled`:
+
+```yaml
+- insert:
+    - id: github-reviewer
+      name: '@xinlongwu/dsh-github-reviewer'
+      config:
+        # read from the environment instead of a literal token:
+        personalAccessToken: !!js process.env.GITHUB_PAT
+        # with a fallback default:
+        # personalAccessToken: !!js process.env.GITHUB_PAT ?? ''
+        # quote expressions containing spaces/operators/quotes:
+        # pollIntervalMs: !!js "process.env.DSH_GHR_POLL_MS ? Number(process.env.DSH_GHR_POLL_MS) : 120000"
+        # join segments onto $DSH_HOME (default ~/.dsh):
+        # privateKeyPath: !!js dshHomePath('secrets', 'github-app.pem')
+        # platform-conditional disable:
+        # disabled: !!js process.platform === 'win32'
+```
+
+- **Scope**: the expression evaluates inside `with(ctx)` over the loader context — `process` is available (`process.env.X`, `process.cwd()`, `process.platform`, …) plus `dshHomePath(...segments)` (joins segments onto `$DSH_HOME`); full JS syntax (`??`, ternaries, template strings) works.
+- **Quoting**: plain scalars need no quotes (`!!js process.env.X`); **expressions containing spaces/operators/quotes must be quoted as a whole** (`!!js "a ?? b"`).
+- **Timing & trust**: evaluation happens once at boot while the config tree loads (synchronous, not hot-reloaded); expressions run with `eval` semantics, so keep them trusted.
 
 Misconfiguration fails the plugin at load: missing credentials, invalid repository names, unreadable private keys, and missing MCP command/args all throw during activation instead of silently skipping reviews.
 
