@@ -148,6 +148,32 @@ describe('plugin wiring through a real Cordis context', () => {
     await fiber.dispose()
   })
 
+  it('activates with a personal access token and never exchanges an App JWT', async () => {
+    const fetchMock = vi.fn(async () => new Response('[]', { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const ctx = new Context()
+    provideCoreServices(ctx)
+    const fiber = await ctx.plugin(plugin, validConfig('', {
+      appId: '',
+      installationId: '',
+      privateKeyPath: '',
+      personalAccessToken: 'github_pat_xxx',
+    }))
+    await vi.waitFor(() => {
+      expect(fetchMock.mock.calls.some(call => String(call[0]).includes('/pulls'))).toBe(true)
+    })
+    expect(fetchMock.mock.calls.some(call => String(call[0]).includes('/access_tokens'))).toBe(false)
+    await fiber.dispose()
+    expect(fiber.state).toBe(4) // FiberState.DISPOSED (const enum, not usable as a runtime value)
+  })
+
+  it('fails activation when a personal access token is mixed with App credentials', async () => {
+    const keyPath = await tempKeyPath()
+    const ctx = new Context()
+    provideCoreServices(ctx)
+    await expect(ctx.plugin(plugin, validConfig(keyPath, { personalAccessToken: 'ghp_xxx' }))).rejects.toThrow('mutually exclusive')
+  })
+
   it('stays pending when the storage-domain service is not mounted', async () => {
     const keyPath = await tempKeyPath()
     const ctx = new Context()

@@ -60,6 +60,10 @@
     appId: '123456'
     installationId: '987654'
     privateKeyPath: '/etc/dsh/github-app.pem'
+    # Alternative: authenticate as yourself with a personal access token
+    # (classic ghp_ or fine-grained github_pat_). Mutually exclusive with
+    # the three App fields above — leave them empty when using this.
+    # personalAccessToken: 'github_pat_...'
     # Optional. Defaults shown below.
     baseUrl: 'https://api.github.com'
     webUrl: 'https://github.com'

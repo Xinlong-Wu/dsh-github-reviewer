@@ -1,5 +1,6 @@
 /**
- * Plugin configuration: one GitHub App review account per plugin instance.
+ * Plugin configuration: one review account per plugin instance, authenticated
+ * either as a GitHub App installation or with a personal access token.
  * Mount the plugin once per account in the harness composition (the
  * multi-instance pattern, like `mcp-client`); the deployment's default model
  * selection drives every review agent, so no model fields live here.
@@ -49,13 +50,19 @@ export interface McpConfig {
   cwd: string
 }
 
-/** One GitHub App review account as loaded from cordis.yml, flat per instance. */
+/** One review account as loaded from cordis.yml, flat per instance. */
 export interface Config {
   /** Account label used in logs and as the cursor record key; defaults to `default`. */
   name?: string
   appId: string
   installationId: string
   privateKeyPath: string
+  /**
+   * Personal access token (classic `ghp_` or fine-grained `github_pat_`).
+   * When set, the App credentials must be empty: the two auth modes are
+   * mutually exclusive and the token alone selects PAT mode.
+   */
+  personalAccessToken: string
   baseUrl: string
   webUrl: string
   pollIntervalMs: number
@@ -66,12 +73,13 @@ export interface Config {
   mcp?: McpConfig
 }
 
-/** One GitHub App review account with every default resolved. */
+/** One review account with every default resolved. */
 export interface ResolvedAccountConfig {
   name: string
   appId: string
   installationId: string
   privateKeyPath: string
+  personalAccessToken: string
   baseUrl: string
   webUrl: string
   pollIntervalMs: number
@@ -102,6 +110,7 @@ export const Config = z.object({
   appId: z.string().default(''),
   installationId: z.string().default(''),
   privateKeyPath: z.string().default(''),
+  personalAccessToken: z.string().default(''),
   baseUrl: z.string().default(DEFAULT_BASE_URL),
   webUrl: z.string().default(DEFAULT_WEB_URL),
   pollIntervalMs: z.number().min(1000).default(DEFAULT_POLL_INTERVAL_MS),
@@ -142,6 +151,7 @@ export function normalizeAccountConfig(account: Config): ResolvedAccountConfig {
     appId: account.appId.trim(),
     installationId: account.installationId.trim(),
     privateKeyPath: account.privateKeyPath.trim(),
+    personalAccessToken: (account.personalAccessToken ?? '').trim(),
     baseUrl: account.baseUrl.trim().replace(/\/+$/, ''),
     webUrl: account.webUrl.trim().replace(/\/+$/, ''),
     pollIntervalMs: account.pollIntervalMs,
@@ -172,9 +182,21 @@ export function normalizeAccountConfig(account: Config): ResolvedAccountConfig {
  * @param account - normalized account config.
  */
 export function validateAccountRuntime(name: string, account: ResolvedAccountConfig): void {
-  if (account.appId === '') throw new Error(`github-reviewer.${name}.appId is required`)
-  if (account.installationId === '') throw new Error(`github-reviewer.${name}.installationId is required`)
-  if (account.privateKeyPath === '') throw new Error(`github-reviewer.${name}.privateKeyPath is required`)
+  // The auth mode is implicit: a configured personal access token selects PAT
+  // mode, otherwise App mode. Reject a mix so a pasted token cannot silently
+  // override (or be overridden by) App credentials.
+  if (account.personalAccessToken !== '') {
+    if (account.appId !== '' || account.installationId !== '' || account.privateKeyPath !== '') {
+      throw new Error(
+        `github-reviewer.${name}: personalAccessToken and the GitHub App credentials `
+        + '(appId/installationId/privateKeyPath) are mutually exclusive; configure exactly one auth mode',
+      )
+    }
+  } else {
+    if (account.appId === '') throw new Error(`github-reviewer.${name}.appId is required`)
+    if (account.installationId === '') throw new Error(`github-reviewer.${name}.installationId is required`)
+    if (account.privateKeyPath === '') throw new Error(`github-reviewer.${name}.privateKeyPath is required`)
+  }
   if (account.repositories.length === 0) {
     throw new Error(`github-reviewer.${name}.repositories must include at least one owner/repo`)
   }

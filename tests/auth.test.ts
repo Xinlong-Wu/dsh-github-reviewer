@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { generateKeyPairSync, verify } from 'node:crypto'
-import { AppTokenSource, makeAppJWT } from '../src/github/auth.ts'
+import { AppTokenSource, StaticTokenSource, makeAppJWT } from '../src/github/auth.ts'
 
 const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 })
 const pem = privateKey.export({ type: 'pkcs8', format: 'pem' }).toString()
@@ -116,5 +116,17 @@ describe('AppTokenSource', () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('nope', { status: 403 })))
     const source = new AppTokenSource('12345', '987', pem, 'https://api.github.com', () => NOW)
     await expect(source.token()).rejects.toThrow('status=403')
+  })
+})
+
+describe('StaticTokenSource', () => {
+  it('returns the configured token unchanged', async () => {
+    const source = new StaticTokenSource('  github_pat_xxx  ')
+    await expect(source.token()).resolves.toBe('github_pat_xxx')
+    await expect(source.token()).resolves.toBe('github_pat_xxx')
+  })
+
+  it('rejects a blank token', () => {
+    expect(() => new StaticTokenSource('   ')).toThrow('personal access token is required')
   })
 })

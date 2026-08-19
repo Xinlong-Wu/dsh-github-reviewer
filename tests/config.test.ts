@@ -93,6 +93,31 @@ describe('validateAccountRuntime', () => {
     expect(() => validateAccountRuntime('reviewer', normalized)).not.toThrow()
   })
 
+  it('accepts a personal access token instead of the App credentials', () => {
+    const normalized = normalizeAccountConfig({
+      appId: '',
+      installationId: '',
+      privateKeyPath: '',
+      personalAccessToken: ' github_pat_xxx ',
+      baseUrl: 'https://api.github.com',
+      webUrl: 'https://github.com',
+      pollIntervalMs: 5000,
+      repositories: ['owner/repo'],
+      mcp: { command: 'x', args: ['y'], env: {}, cwd: '' },
+    } as AccountConfig)
+    expect(normalized.personalAccessToken).toBe('github_pat_xxx')
+    expect(() => validateAccountRuntime('reviewer', normalized)).not.toThrow()
+  })
+
+  it('rejects mixing a personal access token with App credentials', () => {
+    const normalized = normalizeAccountConfig({
+      ...base,
+      personalAccessToken: 'ghp_xxx',
+      mcp: { command: 'x', args: ['y'], env: {}, cwd: '' },
+    } as AccountConfig)
+    expect(() => validateAccountRuntime('reviewer', normalized)).toThrow('mutually exclusive')
+  })
+
   it('rejects missing fields loudly', () => {
     const cases: Array<[Partial<AccountConfig>, RegExp]> = [
       [{ installationId: '' }, /installationId is required/],

@@ -72,6 +72,9 @@ Mount the plugin in the harness `cordis.yml`, **one plugin instance per account*
     appId: '123456'
     installationId: '987654'
     privateKeyPath: '/etc/dsh/github-app.pem'
+    # Or use a personal access token instead of the three App fields
+    # (the two auth modes are mutually exclusive):
+    # personalAccessToken: 'github_pat_...'
     baseUrl: 'https://api.github.com'      # optional
     webUrl: 'https://github.com'           # optional
     pollIntervalMs: 120000                 # optional, default 2m
@@ -101,9 +104,10 @@ Multiple accounts = another plugin instance with the same `name`, each running i
 | Field | Default | Description |
 |---|---|---|
 | `name` | `default` | Account label used in logs and the cursor record key |
-| `appId` | — | GitHub App ID (required) |
-| `installationId` | — | GitHub App installation ID used to mint installation tokens (required) |
-| `privateKeyPath` | — | Local PEM private key path for signing GitHub App JWTs (required) |
+| `appId` | — | GitHub App ID (required in App mode) |
+| `installationId` | — | GitHub App installation ID used to mint installation tokens (required in App mode) |
+| `privateKeyPath` | — | Local PEM private key path for signing GitHub App JWTs (required in App mode) |
+| `personalAccessToken` | — | Personal access token (classic `ghp_` or fine-grained `github_pat_`); mutually exclusive with the three App fields |
 | `baseUrl` | `https://api.github.com` | GitHub REST API base URL |
 | `webUrl` | `https://github.com` | GitHub web URL and MCP `GITHUB_HOST` value |
 | `pollIntervalMs` | `120000` | Interval between PR polling passes |
@@ -167,6 +171,15 @@ The review system prompt is registered as the agent's complete system prompt and
 
 - Review session logs (including diffs and file contents) are written to disk through `sessionPersistence`; if the repository contains secrets, mind where these logs are stored.
 - The `complete` system-prompt section only replaces the prompt sections — it does not suppress the harness runtime contexts, so if the deployment mounts a workspace-context-style plugin, untrusted text can still reach the model input.
+
+### Personal access token (PAT) mode
+
+Setting `personalAccessToken` (classic `ghp_` or fine-grained `github_pat_`) replaces the three App fields; the two auth modes are mutually exclusive. Mind the semantic differences from App mode:
+
+- Reviews and comments are posted **as you**, with no `[bot]` marker.
+- Prefer a fine-grained PAT with minimal permissions: Contents: Read, Pull requests: Read & Write, Issues: Read & Write, Checks: Read (Metadata is implicit).
+- Replies posted with a PAT have `user.type` `User`, not `Bot`, so they are not filtered as bot comments: a reply starting with `/bot` would be treated as a command again (this plugin's own replies never do). Take care when sharing a repository with other bots that act as regular users.
+- Your own comments have the `OWNER` author association, which the default command allowlist includes.
 
 ## Development
 

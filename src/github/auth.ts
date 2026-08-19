@@ -26,6 +26,29 @@ export interface TokenSource {
 }
 
 /**
+ * A token source wrapping a static personal access token (classic `ghp_` or
+ * fine-grained `github_pat_`). No refresh: expiry or revocation surfaces as a
+ * normal 401 API error on the next poll.
+ */
+export class StaticTokenSource implements TokenSource {
+  private readonly value: string
+
+  /**
+   * @param token - the personal access token; blank values throw.
+   */
+  constructor(token: string) {
+    const trimmed = token.trim()
+    if (trimmed === '') throw new Error('github personal access token is required')
+    this.value = trimmed
+  }
+
+  /** Return the configured token unchanged. */
+  async token(): Promise<string> {
+    return this.value
+  }
+}
+
+/**
  * Build the base64url encoding used by JWTs.
  * @param value - raw bytes.
  * @returns unpadded base64url text.

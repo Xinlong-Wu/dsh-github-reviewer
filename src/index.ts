@@ -18,7 +18,7 @@ import type {} from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-session-persistence'
 import type {} from '@deepseek-ai/dsh-storage-domain'
 import { AgentRunner } from './agent-runner.ts'
-import { AppTokenSource } from './github/auth.ts'
+import { AppTokenSource, StaticTokenSource } from './github/auth.ts'
 import { GitHubClient } from './github/client.ts'
 import { Config, normalizeAccountConfig, validateAccountRuntime } from './config.ts'
 import type { Config as PluginConfig } from './config.ts'
@@ -29,6 +29,7 @@ export { Config }
 export type { Config as GithubReviewerConfig, McpConfig, ResolvedAccountConfig, ReviewConfig } from './config.ts'
 export type { ReviewGuardState, TurnSlot } from './github/guard.ts'
 export type { PullRequest, Repository, ReviewInstructions } from './github/model.ts'
+export { StaticTokenSource }
 export type { TokenSource } from './github/auth.ts'
 export type { ReviewDriver } from './poller.ts'
 
@@ -62,12 +63,16 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
     )
   }
 
-  const tokenSource = await AppTokenSource.fromFile(
-    account.appId,
-    account.installationId,
-    account.privateKeyPath,
-    account.baseUrl,
-  )
+  // PAT mode needs no key file; App mode validates the private key eagerly so
+  // a bad key fails at load, not on the first review.
+  const tokenSource = account.personalAccessToken !== ''
+    ? new StaticTokenSource(account.personalAccessToken)
+    : await AppTokenSource.fromFile(
+      account.appId,
+      account.installationId,
+      account.privateKeyPath,
+      account.baseUrl,
+    )
   const client = new GitHubClient(account.baseUrl, tokenSource)
   const domain = await ctx.storageDomain.open(cursorDomainSpec)
   try {

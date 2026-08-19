@@ -72,6 +72,8 @@ peer 依赖：`@deepseek-ai/cordis`（harness 的 Cordis 运行时）。
     appId: '123456'
     installationId: '987654'
     privateKeyPath: '/etc/dsh/github-app.pem'
+    # 或者用个人访问令牌代替上面三个 App 字段（两者互斥）：
+    # personalAccessToken: 'github_pat_...'
     baseUrl: 'https://api.github.com'      # 可选
     webUrl: 'https://github.com'           # 可选
     pollIntervalMs: 120000                 # 可选，默认 2 分钟
@@ -101,9 +103,10 @@ peer 依赖：`@deepseek-ai/cordis`（harness 的 Cordis 运行时）。
 | 字段 | 默认值 | 说明 |
 |---|---|---|
 | `name` | `default` | 账户标签，用于日志与游标记录键 |
-| `appId` | — | GitHub App ID（必填） |
-| `installationId` | — | 用于生成安装令牌的 GitHub App 安装 ID（必填） |
-| `privateKeyPath` | — | 用于签名 GitHub App JWT 的本地 PEM 私钥路径（必填） |
+| `appId` | — | GitHub App ID（App 模式必填） |
+| `installationId` | — | 用于生成安装令牌的 GitHub App 安装 ID（App 模式必填） |
+| `privateKeyPath` | — | 用于签名 GitHub App JWT 的本地 PEM 私钥路径（App 模式必填） |
+| `personalAccessToken` | — | 个人访问令牌（classic `ghp_` 或 fine-grained `github_pat_`）；设置后与 App 三件套互斥，无需再填 App 字段 |
 | `baseUrl` | `https://api.github.com` | GitHub REST API 基础 URL |
 | `webUrl` | `https://github.com` | GitHub web URL 及 MCP 的 `GITHUB_HOST` 值 |
 | `pollIntervalMs` | `120000` | PR 轮询间隔 |
@@ -167,6 +170,15 @@ agent setup 在未发布的 agent 上下文上注册「评审世界」：一个 
 
 - 评审会话日志（含 diff 与文件内容）会经 `sessionPersistence` 落盘；仓库含机密时，注意这些日志的存储位置。
 - `complete` 系统提示段只替换提示段，不抑制 harness 的 runtime contexts；若部署挂载了 workspace-context 类插件，非可信文本仍会进入模型输入。
+
+### 个人访问令牌（PAT）模式
+
+设置 `personalAccessToken`（classic `ghp_` 或 fine-grained `github_pat_`）后无需 App 三件套，两者互斥。注意与 App 模式的语义差异：
+
+- 评审与评论以**你本人的身份**发出，没有 `[bot]` 标识。
+- 建议使用 fine-grained PAT 并按需收窄：Contents: Read、Pull requests: Read & Write、Issues: Read & Write、Checks: Read（Metadata 自动附带）。
+- PAT 发出的回复 `user.type` 是 `User` 而非 `Bot`，不会被机器人过滤器拦截：若回复内容以 `/bot` 开头会被再次当作命令（本插件的正常回复不会），与其他以用户身份运行的机器人共用仓库时需留意。
+- 你自己的评论 `author_association` 是 `OWNER`，默认就在命令白名单内。
 
 ## 开发
 
