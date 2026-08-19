@@ -10,12 +10,17 @@ import { defineDomain, domainTable } from '@deepseek-ai/dsh-storage-domain'
 import type { KvTable } from '@deepseek-ai/dsh-storage-domain'
 import { z } from 'zod'
 import type { CursorState } from './github/cursor.ts'
-import { CURSOR_STATUS_MISSING_INSTRUCTIONS, CURSOR_STATUS_REVIEWED, emptyCursorState } from './github/cursor.ts'
+import {
+  CURSOR_STATUS_MISSING_INSTRUCTIONS,
+  CURSOR_STATUS_REVIEWED,
+  CURSOR_STATUS_REVIEWING,
+  emptyCursorState,
+} from './github/cursor.ts'
 
 /** Runtime schema for one cursor entry, matching {@link CursorState}. */
 const cursorEntrySchema = z.object({
   headSHA: z.string(),
-  status: z.enum([CURSOR_STATUS_REVIEWED, CURSOR_STATUS_MISSING_INSTRUCTIONS]).optional(),
+  status: z.enum([CURSOR_STATUS_REVIEWED, CURSOR_STATUS_MISSING_INSTRUCTIONS, CURSOR_STATUS_REVIEWING]).optional(),
   updatedAt: z.string().optional(),
   lastCommentCheck: z.string().optional(),
   lastFailedSHA: z.string().optional(),
@@ -25,7 +30,7 @@ const cursorEntrySchema = z.object({
 })
 
 /** Runtime schema for the whole per-account cursor row. */
-const cursorRowSchema = z.object({
+export const cursorRowSchema = z.object({
   prs: z.record(z.string(), cursorEntrySchema),
 }) as unknown as z.ZodType<CursorState>
 
