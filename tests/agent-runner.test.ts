@@ -30,7 +30,6 @@ const account: ResolvedAccountConfig = {
   repositories: ['owner/repo'],
   review: { maxToolCalls: 30, toolTimeoutMs: 5000, toolResultLimit: 60000, timeoutMs: 30_000, defaultInstructions: '' },
   mcp: { command: 'github-mcp-server', args: ['stdio'], env: {}, cwd: '' },
-  statePath: '',
 }
 
 const rawTools: RawMcpTool[] = [

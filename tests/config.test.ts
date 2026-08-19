@@ -17,7 +17,6 @@ const base: AccountConfig = {
   webUrl: 'https://github.com/',
   pollIntervalMs: 5000,
   repositories: [' owner/repo '],
-  statePath: ' ./state.json ',
 }
 
 describe('normalizeAccountConfig', () => {
@@ -26,7 +25,6 @@ describe('normalizeAccountConfig', () => {
     expect(normalized.appId).toBe('123')
     expect(normalized.baseUrl).toBe('https://api.github.com')
     expect(normalized.webUrl).toBe('https://github.com')
-    expect(normalized.statePath).toBe('./state.json')
     expect(normalized.review).toEqual({
       maxToolCalls: DEFAULT_MAX_TOOL_CALLS,
       toolTimeoutMs: DEFAULT_TOOL_TIMEOUT_MS,

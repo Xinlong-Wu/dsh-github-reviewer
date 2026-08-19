@@ -35,6 +35,7 @@ The plugin injects the harness `agents` and `sessions` services, so the deployme
 ```
 
 - **The model is not plugin-configured**: every review agent uses the deployment's default model selection (`agentDefaultModel`, provided by the agent-spine family, e.g. configured in `agent-spine-demo`'s `agents` entry).
+- **The cursor needs the storage domain**: the `dsh_github_reviewer` domain is provided by `@deepseek-ai/dsh-storage-domain`, which needs a backend (`@deepseek-ai/dsh-storage-json` or `@deepseek-ai/dsh-storage-sqlite`) routed in the storage-domain config (e.g. `backend: json` or `backend: sqlite`). The plugin fails loudly at load without it.
 - **Without `sessionPersistence`**: the reviewer still works, but PR sessions are memory-only — after a restart the loop starts each PR from a fresh session.
 - **With `sessionPersistence`**: every turn is checkpointed, and the reviewer resumes the persisted PR session on restart (it never creates a second session for the same PR).
 - PR sessions live in the same session store as interactive sessions, so reviews are visible and replayable in the harness session UI.
@@ -55,7 +56,7 @@ Mount the plugin in the harness `cordis.yml`, **one plugin instance per account*
 - id: github-reviewer-org
   name: '@lingobridge/dsh-github-reviewer'
   config:
-    name: org                             # account label: logs + default statePath
+    name: org                             # account label: logs + cursor record key
     appId: '123456'
     installationId: '987654'
     privateKeyPath: '/etc/dsh/github-app.pem'
@@ -79,7 +80,6 @@ Mount the plugin in the harness `cordis.yml`, **one plugin instance per account*
         - '--tools=pull_request_read,get_file_contents,pull_request_review_write,add_comment_to_pending_review'
       env: {}                              # optional; GitHub tokens are injected automatically
       cwd: ''                              # optional
-    statePath: ''                          # optional; defaults to ./.dsh-github-reviewer/<name>.json
 ```
 
 Multiple accounts = another plugin instance with the same `name`, each running its own poll loop.
@@ -105,7 +105,6 @@ Multiple accounts = another plugin instance with the same `name`, each running i
 | `mcp.args` | — | Arguments for the server; include explicit `--tools=...` (required) |
 | `mcp.env` | `{}` | Extra MCP server environment variables; GitHub tokens are injected automatically |
 | `mcp.cwd` | — | Optional working directory for the server |
-| `statePath` | `./.dsh-github-reviewer/<name>.json` | Cursor state file path |
 
 
 Misconfiguration fails the plugin at load: missing credentials, invalid repository names, unreadable private keys, and missing MCP command/args all throw during activation instead of silently skipping reviews.
@@ -119,7 +118,7 @@ Each account runs its own poll loop (an immediate pass, then every `pollInterval
 - New PR or changed `head.sha` → run a review.
 - Reviewed or `missing_instructions` PR with an unchanged SHA → poll comments for `/review` and `/bot` commands.
 
-Cursor state is one JSON file per account (`prs` keyed by `owner/repo#number` with the head SHA, terminal status, and comment-check timestamps), written atomically via a temp-file rename.
+Cursor state lives in the harness storage domain (`dsh_github_reviewer` domain, `accounts` table, one record per account), persisted by whichever backend the deployment routes to the domain — JSON files with `dsh-storage-json`, or a real SQLite database with `dsh-storage-sqlite`.
 
 ### Per-PR agent and session
 

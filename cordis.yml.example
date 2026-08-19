@@ -20,6 +20,17 @@
 # - id: session-persistence-jsonl
 #   name: '@deepseek-ai/dsh-session-persistence-jsonl'
 #   $if: 'false'            # placeholder
+# The review cursor lives in a storage-domain record per account. Pick the
+# backend: JSON files (dsh-storage-json) or a real SQLite database
+# (dsh-storage-sqlite); route it in the storage-domain config below.
+- id: storage-json
+  name: '@deepseek-ai/dsh-storage-json'
+  config:
+    root: './.storage'
+- id: storage-domain
+  name: '@deepseek-ai/dsh-storage-domain'
+  config:
+    backend: json
 
 - id: github-reviewer-org
   name: '@lingobridge/dsh-github-reviewer'
@@ -61,9 +72,6 @@
         - '--tools=pull_request_read,get_file_contents,pull_request_review_write,add_comment_to_pending_review'
       env: {}
       cwd: ''
-    # Optional cursor state file; defaults to
-    # ./.dsh-github-reviewer/<name>.json next to the process.
-    statePath: ''
 
 # A second account is just another plugin instance with its own config.
 - id: github-reviewer-personal

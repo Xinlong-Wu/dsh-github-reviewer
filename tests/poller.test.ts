@@ -1,13 +1,11 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
-import { join } from 'node:path'
-import { tmpdir } from 'node:os'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ResolvedAccountConfig } from '../src/config.ts'
 import type { GitHubClient } from '../src/github/client.ts'
 import type { PullRequest } from '../src/github/model.ts'
 import { AccountPoller, recordingLogger } from '../src/poller.ts'
 import type { ReviewDriver } from '../src/poller.ts'
-import { JsonFileCursorStore } from '../src/state-file.ts'
+import type { CursorStore } from '../src/cursor-store.ts'
+import { emptyCursorState } from '../src/github/cursor.ts'
 
 const pr: PullRequest = {
   number: 42,
@@ -30,7 +28,6 @@ const account: ResolvedAccountConfig = {
   repositories: ['owner/repo'],
   review: { maxToolCalls: 30, toolTimeoutMs: 5000, toolResultLimit: 60000, timeoutMs: 30_000, defaultInstructions: '' },
   mcp: { command: 'github-mcp-server', args: ['stdio'], env: {}, cwd: '' },
-  statePath: '',
 }
 
 const signal = new AbortController().signal
@@ -96,16 +93,19 @@ function fakeDriver() {
   return { driver, reviewCalls, chatCalls }
 }
 
-let dir: string
-let store: JsonFileCursorStore
+/** An in-memory cursor store standing in for the storage domain. */
+function fakeStore(): CursorStore {
+  let state = emptyCursorState()
+  return {
+    load: async () => state,
+    save: async (next) => { state = next },
+  }
+}
 
-beforeEach(async () => {
-  dir = await mkdtemp(join(tmpdir(), 'dsh-github-reviewer-'))
-  store = new JsonFileCursorStore(join(dir, 'cursor.json'))
-})
+let store: CursorStore
 
-afterEach(async () => {
-  await rm(dir, { recursive: true, force: true })
+beforeEach(() => {
+  store = fakeStore()
 })
 
 function buildPoller(
@@ -141,7 +141,7 @@ describe('AccountPoller review flow', () => {
 
     expect(reviewCalls).toHaveLength(1)
     expect(reviewCalls[0].instructions.text).toBe('trusted')
-    const state = JSON.parse(await readFile(store.filePath, 'utf8')) as { prs: Record<string, { status: string; headSHA: string }> }
+    const state = await store.load()
     expect(state.prs['owner/repo#42'].status).toBe('reviewed')
     expect(lines.some(line => line.includes('github review submitted'))).toBe(true)
   })
@@ -182,7 +182,7 @@ describe('AccountPoller review flow', () => {
     const poller = buildPoller(c, driver, lines, 'missing')
 
     await poller.pollOnce(signal)
-    const state = JSON.parse(await readFile(store.filePath, 'utf8')) as { prs: Record<string, { status: string }> }
+    const state = await store.load()
     expect(state.prs['owner/repo#42'].status).toBe('missing_instructions')
     expect(reviewCalls).toHaveLength(0)
 

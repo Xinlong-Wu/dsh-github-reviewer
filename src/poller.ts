@@ -24,8 +24,8 @@ import type { PullRequest, ReviewInstructions } from './github/model.ts'
 import { fullName, parseRepository, shortSHA } from './github/model.ts'
 import { sanitizeReviewPromptText } from './github/sanitizer.ts'
 import { parseCommentCommand } from './github/commands.ts'
+import type { CursorStore } from './cursor-store.ts'
 import type { PollLogger } from './logger.ts'
-import type { JsonFileCursorStore } from './state-file.ts'
 
 export {
   cordisLogger,
@@ -61,7 +61,7 @@ export interface AccountPollerDeps {
   account: ResolvedAccountConfig
   client: GitHubClient
   tokenSource: TokenSource
-  store: JsonFileCursorStore
+  store: CursorStore
   driver: ReviewDriver
   logger: PollLogger
 }
