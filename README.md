@@ -203,7 +203,7 @@ dsh --profile web --dump-config   # 打印组合后的完整插件树，确认 g
 | `review.timeoutMs` | `900000` | 单回合总截止时间；超时后取消 agent |
 | `review.defaultInstructions` | — | 仅当基础仓库缺少 `.github/review_instructions.md` 时使用的兜底指令 |
 | `review.commandAuthorAssociations` | `['OWNER','MEMBER','COLLABORATOR']` | 允许触发 `/review`、`/bot` 命令的评论作者身份（GitHub `author_association` 值，大小写不敏感）；`['*']` 允许所有人，空数组禁止所有人 |
-| `review.models` | `[]`（用部署默认模型） | 评审模型的候选列表 `[{provider, model}]`，按顺序取第一个「provider 已挂载且模型在目录中」的候选；全部不可用时激活报错。留空则用部署的 `agentDefaultModel` |
+| `review.models` | `[]`（用部署默认模型） | 评审模型的候选列表 `[{provider, model}]`。**判断发生在首次创建 PR 会话时**（不在插件挂载时报错）：取第一个「provider 已注册且模型在该 provider 目录中」的候选；全部不可用时本次评审终止、游标记录失败（退避后重试）。「可用」= 目录判定（`llm.listModels`），不做真实连接探测。留空则用部署的 `agentDefaultModel` |
 | `mcp.command` | — | 启动每回合 GitHub MCP server 的命令（必填） |
 | `mcp.args` | — | server 参数；请显式包含 `--tools=...`（强烈建议；守卫会过滤未列出的工具） |
 | `mcp.env` | `{}` | 额外的 MCP server 环境变量；GitHub 令牌自动注入 |

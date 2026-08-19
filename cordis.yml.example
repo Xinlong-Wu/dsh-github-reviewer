@@ -95,9 +95,11 @@
       defaultInstructions: |
         Review this pull request for correctness, regressions, security issues,
         and missing tests. Leave concise inline comments where useful.
-      # Optional review-model candidates, in preference order. The first one
-      # whose provider is mounted and whose model exists in that provider's
-      # catalog wins; activation fails if none is available. Omit to use the
+      # Optional review-model candidates, in preference order, resolved at the
+      # first session creation (not at mount). The first candidate whose
+      # provider is registered and whose model exists in that provider's
+      # catalog wins; if none is available that review is aborted and the
+      # failure is recorded in the cursor (backoff retry). Omit to use the
       # deployment's default model selection (agentDefaultModel).
       # models:
       #   - { provider: deepseek-official, model: deepseek-v4-flash }

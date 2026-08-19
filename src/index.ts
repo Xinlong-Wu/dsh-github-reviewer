@@ -82,15 +82,6 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
 
     const logger = cordisLogger(ctx.logger)
 
-    // Resolve the review-model override when `review.models` is configured:
-    // the first candidate whose provider is mounted and whose model is in the
-    // provider catalog wins; none available is a load error, not a silent
-    // fallback. Without the list the deployment default selection is used.
-    let modelOverride: { provider: string; model: string } | undefined
-    if (account.review.models.length > 0) {
-      modelOverride = await resolveReviewModel(ctx, account.name, account.review.models, logger)
-    }
-
     // Register the account's review-session directory as a harness workspace
     // when the deployment mounts the `workspace` service (the web profile
     // does): review-agent sessions carry this directory as their cwd, so they
@@ -111,13 +102,14 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
       // depend on plugin mount order at apply time.
       const sessionPersistence = ctx.get('sessionPersistence')
       const sessionTitle = ctx.get('sessionTitle')
+      const llm = ctx.get('llm')
       const runner = new AgentRunner({
         accountName: account.name,
         account,
         agents: ctx.agents,
         sessions: ctx.sessions,
         agentDefaultModel: ctx.agentDefaultModel,
-        ...modelOverride === undefined ? {} : { modelOverride },
+        ...llm === undefined ? {} : { llm },
         ...sessionTitle === undefined ? {} : { sessionTitle },
         ...sessionPersistence === undefined ? {} : { sessionPersistence },
         tokenSource,
@@ -145,53 +137,4 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
     await domain.close()
     throw error
   }
-}
-
-/** Structural view of the `llm` service the model resolution needs. */
-interface ModelCatalog {
-  /** Models advertised by one registered provider route, in catalog order. */
-  listModels(provider: string): Promise<Array<{ id: string }>>
-}
-
-/** Logger shape used by {@link resolveReviewModel}. */
-type ModelLogger = { info(message: string): void; warn(message: string): void }
-
-/**
- * Pick the first available candidate from `review.models`: a provider route
- * must be mounted and the exact model id must appear in that provider's
- * catalog. Unavailable candidates are logged and skipped; if none is
- * available a load error names every candidate.
- * @param ctx - plugin context, for the optional `llm` service.
- * @param name - account name, for diagnostics.
- * @param candidates - ordered `{provider, model}` candidates.
- * @param logger - poller logger.
- * @returns the selected provider/model pair.
- */
-export async function resolveReviewModel(
-  ctx: Context,
-  name: string,
-  candidates: Array<{ provider: string; model: string }>,
-  logger: ModelLogger,
-): Promise<{ provider: string; model: string }> {
-  const llm = ctx.get('llm') as ModelCatalog | undefined
-  if (llm === undefined) {
-    throw new Error(
-      `github-reviewer.${name}: review.models is configured but the deployment does not mount the llm service`,
-    )
-  }
-  for (const candidate of candidates) {
-    try {
-      const models = await llm.listModels(candidate.provider)
-      if (models.some(model => model.id === candidate.model)) {
-        logger.info(`github reviewer model resolved account=${name} provider=${candidate.provider} model=${candidate.model}`)
-        return { provider: candidate.provider, model: candidate.model }
-      }
-    } catch {
-      // Unregistered provider or adapter failure: try the next candidate.
-    }
-  }
-  throw new Error(
-    `github-reviewer.${name}: none of the configured review.models is available; `
-    + `candidates: ${candidates.map(candidate => `${candidate.provider}/${candidate.model}`).join(', ')}`,
-  )
 }

@@ -206,7 +206,7 @@ Multiple accounts = another plugin instance with the same `name`, each running i
 | `review.timeoutMs` | `900000` | Overall deadline for one turn; the agent is cancelled past it |
 | `review.defaultInstructions` | — | Fallback instructions used only when `.github/review_instructions.md` is missing from the base repository |
 | `review.commandAuthorAssociations` | `['OWNER','MEMBER','COLLABORATOR']` | GitHub `author_association` values allowed to trigger `/review` and `/bot` commands (case-insensitive); `['*']` allows everyone, an empty array allows no one |
-| `review.models` | `[]` (use the deployment default) | Ordered review-model candidates `[{provider, model}]`; the first candidate whose provider is mounted and whose model appears in that provider's catalog wins. Activation fails loudly when none is available. Empty uses the deployment's `agentDefaultModel` |
+| `review.models` | `[]` (use the deployment default) | Ordered review-model candidates `[{provider, model}]`. **Resolved at the first session creation**, not at plugin mount: the first candidate whose provider is registered and whose model appears in that provider's catalog wins; when none is available that review is aborted and the failure is recorded in the cursor (retried after backoff). "Available" is a catalog check (`llm.listModels`), not a live connection probe. Empty uses the deployment's `agentDefaultModel` |
 | `mcp.command` | — | Command used to start the per-turn GitHub MCP server (required) |
 | `mcp.args` | — | Arguments for the server; include explicit `--tools=...` (strongly recommended; the guard filters out tools not listed) |
 | `mcp.env` | `{}` | Extra MCP server environment variables; GitHub tokens are injected automatically |
