@@ -5,6 +5,10 @@
   "publishConfig": {
     "access": "public"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Xinlong-Wu/dsh-github-reviewer.git"
+  },
   "license": "Apache-2.0",
   "type": "module",
   "main": "lib/index.js",
