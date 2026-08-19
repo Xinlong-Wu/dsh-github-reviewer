@@ -204,6 +204,30 @@ dsh --profile web --dump-config   # 打印组合后的完整插件树，确认 g
 | `mcp.env` | `{}` | 额外的 MCP server 环境变量；GitHub 令牌自动注入 |
 | `mcp.cwd` | — | server 的可选工作目录 |
 
+### 在配置文件里写 JS 表达式（`!!js`）
+
+patch 文件（`cordis.patch.yml`、`--patch` 覆盖层、bundle）里的配置值支持 YAML `!!js` 标签，在**启动加载时**同步求值，可用于任意字段（包括 `disabled`）：
+
+```yaml
+- insert:
+    - id: github-reviewer
+      name: '@xinlongwu/dsh-github-reviewer'
+      config:
+        # 从环境变量读，避免把令牌明文写进文件：
+        personalAccessToken: !!js process.env.GITHUB_PAT
+        # 带默认值回退：
+        # personalAccessToken: !!js process.env.GITHUB_PAT ?? ''
+        # 含空格/操作符/引号的表达式整体加引号：
+        # pollIntervalMs: !!js "process.env.DSH_GHR_POLL_MS ? Number(process.env.DSH_GHR_POLL_MS) : 120000"
+        # 路径拼到 $DSH_HOME（默认 ~/.dsh）下：
+        # privateKeyPath: !!js dshHomePath('secrets', 'github-app.pem')
+        # 平台条件禁用：
+        # disabled: !!js process.platform === 'win32'
+```
+
+- **求值作用域**：表达式在 loader 上下文中以 `with(ctx)` 求值——可直接用 `process`（`process.env.X`、`process.cwd()`、`process.platform` 等）和 `dshHomePath(...segments)`（把片段拼到 `$DSH_HOME` 下）；`??`、三元、模板字符串等 JS 语法都可用。
+- **引号规则**：简单标量不用引号（`!!js process.env.X`）；**含空格/操作符/引号的表达式要整体包一层引号**（`!!js "a ?? b"`）。
+- **时机与信任**：求值发生在每次启动的配置树加载阶段（同步、一次，不是热更新）；按 `eval` 语义执行，只放可信表达式。
 
 配置错误会在加载时响亮失败：缺少凭证、无效的仓库名、无法读取的私钥、缺少 MCP command/args 都会在激活时报错，而不是静默跳过评审。
 
