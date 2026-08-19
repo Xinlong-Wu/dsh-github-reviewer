@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { PullRequest } from '../src/github/model.ts'
-import { buildChatSystemPrompt, buildReviewSystemPrompt, buildReviewUserPrompt, pullRequestUserKey } from '../src/github/prompts.ts'
+import { buildChatSystemPrompt, buildReviewSystemPrompt, buildReviewUserPrompt } from '../src/github/prompts.ts'
 
 const pr: PullRequest = {
   number: 42,
@@ -58,15 +58,10 @@ describe('buildReviewUserPrompt', () => {
 })
 
 describe('buildChatSystemPrompt', () => {
-  it('describes the PR and forbids commands in replies', () => {
+  it('describes the PR, offers only read tools, and forbids commands in replies', () => {
     const prompt = buildChatSystemPrompt(pr)
     expect(prompt).toContain('owner/repo#42')
+    expect(prompt).toContain('Write tools are not available in this conversation.')
     expect(prompt).toContain('Do not include /review or /bot commands in your response.')
-  })
-})
-
-describe('pullRequestUserKey', () => {
-  it('builds the github:owner:repo:pr:number key', () => {
-    expect(pullRequestUserKey(pr)).toBe('github:owner:repo:pr:42')
   })
 })

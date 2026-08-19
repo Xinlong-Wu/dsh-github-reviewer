@@ -52,7 +52,8 @@ export interface ReviewTurnOutcome {
 
 /** Stable session key for one PR: account-scoped, repo and PR number based. */
 export function sessionKey(accountName: string, pr: PullRequest): string {
-  return `github:${accountName}:${pr.base.repo.owner}:${pr.base.repo.name}:pr:${pr.number}`
+  const safeAccount = accountName.replace(/[^a-zA-Z0-9_.-]+/g, '_')
+  return `github:${safeAccount}:${pr.base.repo.owner}:${pr.base.repo.name}:pr:${pr.number}`
 }
 
 /** Aggregate the last assistant text within one owned interval. */
@@ -130,16 +131,20 @@ export class AgentRunner {
     instructions: ReviewInstructions | undefined,
     signal: AbortSignal,
   ): Promise<ReviewTurnOutcome> {
-    const handle = await this.ensureAgent(pr, signal)
-    const agent = handle.agent
-    const token = await this.deps.tokenSource.token(signal)
-    const host = await this.connectHost(token, signal)
-    const state = new ReviewGuardState()
-    const firstSeq = agent.session.seq
-    this.slot.current = { pr, flow, state, host, ...instructions === undefined ? {} : { instructions } }
-    const deadline = setTimeout(() => agent.cancel({ kind: 'user' }), this.deps.account.review.timeoutMs)
+    // The deadline covers the whole turn, including agent creation and the MCP handshake.
+    let agent: AgentHandle['agent'] | undefined
+    const deadline = setTimeout(() => agent?.cancel({ kind: 'user' }), this.deps.account.review.timeoutMs)
     deadline.unref()
+    let host: McpHost | undefined
+    const state = new ReviewGuardState()
+    let firstSeq = 0
     try {
+      const handle = await this.ensureAgent(pr, signal)
+      agent = handle.agent
+      const token = await this.deps.tokenSource.token(signal)
+      host = await this.connectHost(token, signal)
+      firstSeq = agent.session.seq
+      this.slot.current = { pr, flow, state, host, ...instructions === undefined ? {} : { instructions } }
       this.deps.logger.debug(`using shared github pr session repo=${pr.base.repo.owner}/${pr.base.repo.name} number=${pr.number} flow=${flow}`)
       agent.followup(createUserMessage({
         content: [{ type: 'text', text: userText }],
@@ -149,8 +154,9 @@ export class AgentRunner {
     } finally {
       clearTimeout(deadline)
       this.slot.current = undefined
-      await host.close()
+      if (host !== undefined) await host.close()
     }
+    if (agent === undefined) throw new Error('unreachable: turn ended without an agent')
     await this.deps.sessions.flush(agent.session)
     const text = summarizeInterval(agent.session.events, firstSeq)
     return { submitted: state.submittedComment, text }
@@ -244,6 +250,8 @@ export class AgentRunner {
       { command: account.mcp.command, args: account.mcp.args, env, cwd: account.mcp.cwd },
       account.review.toolTimeoutMs,
       account.review.toolResultLimit,
+      signal,
+      line => this.deps.logger.debug(`github mcp server stderr: ${line}`),
     )
   }
 

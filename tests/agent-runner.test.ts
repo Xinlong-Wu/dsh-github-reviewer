@@ -1,13 +1,18 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
 import type { AgentRegistry, AgentHandle } from '@deepseek-ai/dsh-agent'
 import type { SessionEvent, SessionStore } from '@deepseek-ai/dsh-session'
 import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
-import { AgentRunner } from '../src/agent-runner.ts'
+import { AgentRunner, sessionKey } from '../src/agent-runner.ts'
 import type { ResolvedAccountConfig } from '../src/config.ts'
-import type { McpHost, RawMcpTool } from '../src/github/mcp-host.ts'
+import { StdioMcpHost } from '../src/github/mcp-host.ts'
+import type { McpHost, McpServerConfig, RawMcpTool } from '../src/github/mcp-host.ts'
 import type { PullRequest } from '../src/github/model.ts'
 import { silentLogger } from '../src/logger.ts'
+
+afterEach(() => {
+  vi.restoreAllMocks()
+})
 
 const pr: PullRequest = {
   number: 42,
@@ -133,11 +138,19 @@ function makeWorld(): World {
   }
 }
 
-function makeRunner(world: World, sessionPersistence?: { listSnapshots: () => Promise<Array<{ header: { id: string } }>> }) {
+/** Per-test overrides for {@link makeRunner}. */
+interface MakeRunnerOptions {
+  /** Account the runner drives with; e.g. a tiny review timeout for deadline tests. */
+  account?: ResolvedAccountConfig
+  /** MCP host factory override; `null` disables the fake so the real StdioMcpHost.connect is used. */
+  hostFactory?: ((token: string, signal: AbortSignal) => Promise<McpHost>) | null
+}
+
+function makeRunner(world: World, sessionPersistence?: { listSnapshots: () => Promise<Array<{ header: { id: string } }>> }, options: MakeRunnerOptions = {}) {
   const hosts: Array<{ token: string; closed: boolean }> = []
   const runner = new AgentRunner({
     accountName: 'reviewer',
-    account,
+    account: options.account ?? account,
     agents: {
       create: world.create,
       resume: world.resume,
@@ -147,15 +160,19 @@ function makeRunner(world: World, sessionPersistence?: { listSnapshots: () => Pr
     ...sessionPersistence === undefined ? {} : { sessionPersistence: sessionPersistence as never },
     tokenSource: { token: async () => 'tok' },
     logger: silentLogger(),
-    hostFactory: async (token) => {
-      const record = { token, closed: false }
-      hosts.push(record)
-      return {
-        listTools: async () => rawTools,
-        call: async (_remote, args) => ({ content: JSON.stringify(args), isError: false }),
-        close: async () => { record.closed = true },
-      } satisfies McpHost
-    },
+    ...(options.hostFactory === null
+      ? {}
+      : {
+          hostFactory: options.hostFactory ?? (async (token: string) => {
+            const record = { token, closed: false }
+            hosts.push(record)
+            return {
+              listTools: async () => rawTools,
+              call: async (_remote, args) => ({ content: JSON.stringify(args), isError: false }),
+              close: async () => { record.closed = true },
+            } satisfies McpHost
+          }),
+        }),
   })
   return { runner, hosts }
 }
@@ -330,6 +347,65 @@ describe('AgentRunner turn outcomes', () => {
     await promise
 
     expect(hosts[hosts.length - 1].token).toBe('tok')
+    await runner.dispose()
+  })
+})
+
+describe('AgentRunner session keys', () => {
+  it('sanitizes illegal characters out of the account segment', () => {
+    expect(sessionKey('my org', pr)).toBe('github:my_org:owner:repo:pr:42')
+    expect(sessionKey('a/b:c', pr)).toBe('github:a_b_c:owner:repo:pr:42')
+    expect(sessionKey('reviewer', pr)).toBe('github:reviewer:owner:repo:pr:42')
+  })
+})
+
+describe('AgentRunner turn deadline', () => {
+  it('cancels the agent as a user and closes the host when the turn times out', async () => {
+    const world = makeWorld()
+    const fastAccount: ResolvedAccountConfig = {
+      ...account,
+      review: { ...account.review, timeoutMs: 50 },
+    }
+    const { runner, hosts } = makeRunner(world, undefined, { account: fastAccount })
+    const signal = new AbortController().signal
+
+    const promise = runner.driveReview(pr, { text: 'trusted', source: 'x' }, signal)
+    // The fake agent never resolves whenIdle on its own; the deadline must fire.
+    await vi.waitFor(() => expect(world.fakeHandle.agent.cancel).toHaveBeenCalledWith({ kind: 'user' }))
+    // Let the turn unwind past whenIdle.
+    world.fakeHandle.resolveTurn()
+    const outcome = await promise
+
+    expect(outcome.submitted).toBe(false)
+    expect(hosts[hosts.length - 1].closed).toBe(true)
+    expect(runner.slot.current).toBeUndefined()
+    await runner.dispose()
+  })
+})
+
+describe('AgentRunner MCP host connection', () => {
+  it('passes the installation token and web host to the real StdioMcpHost.connect', async () => {
+    const world = makeWorld()
+    const fakeHost = {
+      listTools: async () => rawTools,
+      call: async () => ({ content: '', isError: false }),
+      close: async () => {},
+    } as unknown as StdioMcpHost
+    const connect = vi.spyOn(StdioMcpHost, 'connect').mockResolvedValue(fakeHost)
+    // No hostFactory: the runner must use the real connect path.
+    const { runner } = makeRunner(world, undefined, { hostFactory: null })
+    const signal = new AbortController().signal
+
+    const promise = runner.driveReview(pr, { text: 'trusted', source: 'x' }, signal)
+    world.fakeHandle.resolveTurn()
+    await promise
+
+    expect(connect).toHaveBeenCalled()
+    const lastCall = connect.mock.calls.at(-1)!
+    const config = lastCall[0] as McpServerConfig
+    expect(config.env.GITHUB_PERSONAL_ACCESS_TOKEN).toBe('tok')
+    expect(config.env.GITHUB_HOST).toBe('https://github.com')
+    expect(typeof lastCall[4]).toBe('function')
     await runner.dispose()
   })
 })

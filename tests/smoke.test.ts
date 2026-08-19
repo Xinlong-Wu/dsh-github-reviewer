@@ -67,26 +67,29 @@ function provideCoreServices(ctx: Context): void {
 }
 
 describe('plugin wiring through a real Cordis context', () => {
-  it('declares its name, injects agents/sessions, and exports a Config schema', () => {
+  it('declares its name, injects agents/sessions/agentDefaultModel/storageDomain, and exports a Config schema', () => {
     expect(plugin.name).toBe('github-reviewer')
-    expect(plugin.inject).toEqual(['agents', 'sessions', 'agentDefaultModel'])
+    expect(plugin.inject).toEqual(['agents', 'sessions', 'agentDefaultModel', 'storageDomain'])
     expect(plugin.Config).toBeDefined()
     expect(typeof plugin.apply).toBe('function')
   })
 
   it('activates with a valid account and disposes cleanly', async () => {
     const keyPath = await tempKeyPath()
-    vi.stubGlobal('fetch', vi.fn(async (url: string | URL | Request) => {
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
       if (String(url).includes('/access_tokens')) {
         return new Response(JSON.stringify({ token: 'tok', expires_at: '2099-01-01T00:00:00Z' }), { status: 201 })
       }
       return new Response('[]', { status: 200 })
-    }))
+    })
+    vi.stubGlobal('fetch', fetchMock)
     const ctx = new Context()
     provideCoreServices(ctx)
     const fiber = await ctx.plugin(plugin, validConfig(keyPath))
     // Let the immediate poll tick settle against the stubbed API.
-    await new Promise(resolve => setTimeout(resolve, 50))
+    await vi.waitFor(() => {
+      expect(fetchMock.mock.calls.some(call => String(call[0]).includes('/pulls'))).toBe(true)
+    })
     await fiber.dispose()
     expect(fiber.state).toBe(4) // FiberState.DISPOSED (const enum, not usable as a runtime value)
   })
@@ -124,12 +127,36 @@ describe('plugin wiring through a real Cordis context', () => {
     await expect(ctx.plugin(plugin, {} as Config)).rejects.toThrow('appId is required')
   })
 
-  it('fails activation loudly when the storage-domain form is not mounted', async () => {
+  it('fails activation on an empty or non-http baseUrl', async () => {
+    const keyPath = await tempKeyPath()
+    const ctx = new Context()
+    provideCoreServices(ctx)
+    await expect(ctx.plugin(plugin, validConfig(keyPath, { baseUrl: '' }))).rejects.toThrow('baseUrl is required')
+    const ctx2 = new Context()
+    provideCoreServices(ctx2)
+    await expect(ctx2.plugin(plugin, validConfig(keyPath, { baseUrl: 'ftp://example.com' }))).rejects.toThrow('baseUrl must be http(s)')
+  })
+
+  it('fails activation when the same account name is already active', async () => {
+    const keyPath = await tempKeyPath()
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', { status: 200 })))
+    const ctx = new Context()
+    provideCoreServices(ctx)
+    const fiber = await ctx.plugin(plugin, validConfig(keyPath))
+    await vi.waitFor(() => expect(fiber.state).toBe(2)) // FiberState.ACTIVE
+    await expect(ctx.plugin(plugin, validConfig(keyPath))).rejects.toThrow('already active')
+    await fiber.dispose()
+  })
+
+  it('stays pending when the storage-domain service is not mounted', async () => {
     const keyPath = await tempKeyPath()
     const ctx = new Context()
     ctx.provide('agents', { create: vi.fn(), resume: vi.fn() })
     ctx.provide('sessions', { flush: vi.fn(async () => true) })
     ctx.provide('agentDefaultModel', { currentSelection: () => ({ provider: 'deepseek', model: 'deepseek-chat' }) })
-    await expect(ctx.plugin(plugin, validConfig(keyPath))).rejects.toThrow('storage-domain')
+    const fiber = ctx.plugin(plugin, validConfig(keyPath))
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(fiber.state).toBe(0) // FiberState.PENDING (const enum, not usable as a runtime value)
+    await fiber.dispose()
   })
 })

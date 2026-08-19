@@ -35,8 +35,11 @@ export type { ReviewDriver } from './poller.ts'
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'github-reviewer'
 
-/** Services required by this plugin: agent registry, session store, and the deployment-owned default model selection. */
-export const inject = ['agents', 'sessions', 'agentDefaultModel']
+/** Services required by this plugin: agent registry, session store, deployment-owned default model, and the storage domain. */
+export const inject = ['agents', 'sessions', 'agentDefaultModel', 'storageDomain']
+
+/** Account names currently active in this process, to catch duplicate-instance misconfiguration. */
+const activeAccounts = new Set<string>()
 
 /**
  * Start the poll loop for this instance's account (mount the plugin once per
@@ -50,17 +53,14 @@ export const inject = ['agents', 'sessions', 'agentDefaultModel']
  * @returns activation after the account's cursor state has loaded.
  */
 export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
-  const sessionPersistence = ctx.get('sessionPersistence')
-  const storageDomain = ctx.get('storageDomain')
-  if (storageDomain === undefined) {
-    throw new Error(
-      'github-reviewer requires the storage-domain form: mount @deepseek-ai/dsh-storage-domain '
-      + 'with a backend such as @deepseek-ai/dsh-storage-json or @deepseek-ai/dsh-storage-sqlite '
-      + '(the review cursor lives in a storage-domain record per account)',
-    )
-  }
   const account = normalizeAccountConfig(config)
   validateAccountRuntime(account.name, account)
+  if (activeAccounts.has(account.name)) {
+    throw new Error(
+      `github-reviewer.${account.name} is already active in this process; `
+      + 'two instances with the same account name would share one cursor record',
+    )
+  }
 
   const tokenSource = await AppTokenSource.fromFile(
     account.appId,
@@ -69,36 +69,46 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
     account.baseUrl,
   )
   const client = new GitHubClient(account.baseUrl, tokenSource)
-  const domain = await storageDomain.open(cursorDomainSpec)
-  const store = new StorageDomainCursorStore(domain.table('accounts'), account.name)
-  await store.load()
+  const domain = await ctx.storageDomain.open(cursorDomainSpec)
+  try {
+    const store = new StorageDomainCursorStore(domain.table('accounts'), account.name)
+    await store.load()
 
-  const logger = cordisLogger(ctx.logger)
-  ctx.effect(() => {
-    const runner = new AgentRunner({
-      accountName: account.name,
-      account,
-      agents: ctx.agents,
-      sessions: ctx.sessions,
-      agentDefaultModel: ctx.agentDefaultModel,
-      ...sessionPersistence === undefined ? {} : { sessionPersistence },
-      tokenSource,
-      logger,
-    })
-    const poller = new AccountPoller({
-      accountName: account.name,
-      account,
-      client,
-      tokenSource,
-      store,
-      driver: runner,
-      logger,
-    })
-    poller.start()
-    logger.info(`starting github account=${account.name} repos=${account.repositories.length} poll_interval_ms=${account.pollIntervalMs}`)
-    return async () => {
-      await poller.dispose()
-      await domain.close()
-    }
-  }, `github-reviewer.${account.name}`)
+    const logger = cordisLogger(ctx.logger)
+    ctx.effect(() => {
+      // Read the optional persistence service inside the effect so the wiring
+      // does not depend on plugin mount order at apply time.
+      const sessionPersistence = ctx.get('sessionPersistence')
+      const runner = new AgentRunner({
+        accountName: account.name,
+        account,
+        agents: ctx.agents,
+        sessions: ctx.sessions,
+        agentDefaultModel: ctx.agentDefaultModel,
+        ...sessionPersistence === undefined ? {} : { sessionPersistence },
+        tokenSource,
+        logger,
+      })
+      const poller = new AccountPoller({
+        accountName: account.name,
+        account,
+        client,
+        tokenSource,
+        store,
+        driver: runner,
+        logger,
+      })
+      poller.start()
+      activeAccounts.add(account.name)
+      logger.info(`starting github account=${account.name} repos=${account.repositories.length} poll_interval_ms=${account.pollIntervalMs}`)
+      return async () => {
+        activeAccounts.delete(account.name)
+        await poller.dispose()
+        await domain.close()
+      }
+    }, `github-reviewer.${account.name}`)
+  } catch (error) {
+    await domain.close()
+    throw error
+  }
 }
