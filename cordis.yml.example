@@ -2,63 +2,81 @@
 # The plugin drives reviews through the harness agent loop, so the deployment
 # must mount the agent-loop family. A minimal set is shown below; swap in
 # whatever spine/LLM/persistence plugins your deployment already uses.
+#
+# Mount the plugin ONCE PER ACCOUNT (flat config, multi-instance pattern):
+# every entry below with `name: '@lingobridge/dsh-github-reviewer'` runs one
+# independent poll loop.
 
-plugins:
-  # ---- Harness companions required by github-reviewer ----
+- id: llm-deepseek          # any LLM adapter
+  name: '@deepseek-ai/dsh-llm-deepseek'
+  $if: 'false'              # placeholder: mount your own LLM adapter
+# The agent loop + system-prompt assembly + tool pipeline. The deployment's
+# default model selection (agentDefaultModel) drives every review agent; the
+# plugin does not configure a model.
+# - id: agent-spine
+#   name: '@deepseek-ai/dsh-agent-spine-demo'
+#   $if: 'false'            # placeholder
+# Durable sessions: without this, PR sessions are memory-only across restarts.
+# - id: session-persistence-jsonl
+#   name: '@deepseek-ai/dsh-session-persistence-jsonl'
+#   $if: 'false'            # placeholder
 
-  # Any LLM adapter registering the provider route used below.
-  llm-deepseek:
-    $if: 'false' # placeholder: mount your own LLM adapter
-  # The agent loop + system-prompt assembly + tool pipeline. The deployment's
-  # default model selection (agentDefaultModel) drives every review agent; the
-  # plugin does not configure a model.
-  # agent-spine-demo pre-creates one agent; any composition providing the
-  # `agents` registry and `sessions` store works.
-  # agent-spine:
-  #   $if: 'false' # placeholder
-  # Durable sessions: without this, PR sessions are memory-only across restarts.
-  # session-persistence-jsonl:
-  #   $if: 'false' # placeholder
+- id: github-reviewer-org
+  name: '@lingobridge/dsh-github-reviewer'
+  config:
+    # Account label used in logs and the default state file path.
+    name: org
+    # Required GitHub App identity. The App needs:
+    #   - Pull requests: read/write (reviews and comments)
+    #   - Contents: read (on the base repository, for
+    #     .github/review_instructions.md and file inspection)
+    appId: '123456'
+    installationId: '987654'
+    privateKeyPath: '/etc/dsh/github-app.pem'
+    # Optional. Defaults shown below.
+    baseUrl: 'https://api.github.com'
+    webUrl: 'https://github.com'
+    pollIntervalMs: 120000
+    repositories:
+      - 'owner/repo'
+    review:
+      maxToolCalls: 30
+      toolTimeoutMs: 30000
+      toolResultLimit: 60000
+      # Overall deadline for one review/chat turn; the agent is
+      # cancelled past it.
+      timeoutMs: 900000
+      # Optional fallback used only when the base repository has no
+      # .github/review_instructions.md at the PR base.
+      defaultInstructions: |
+        Review this pull request for correctness, regressions, security issues,
+        and missing tests. Leave concise inline comments where useful.
+    # Required per-turn GitHub MCP server. The plugin injects
+    # GITHUB_PERSONAL_ACCESS_TOKEN and GITHUB_HOST at runtime; do not
+    # put GitHub tokens here.
+    mcp:
+      command: 'github-mcp-server'
+      args:
+        - 'stdio'
+        - '--tools=pull_request_read,get_file_contents,pull_request_review_write,add_comment_to_pending_review'
+      env: {}
+      cwd: ''
+    # Optional cursor state file; defaults to
+    # ./.dsh-github-reviewer/<name>.json next to the process.
+    statePath: ''
 
-  github-reviewer:
-    config:
-      accounts:
-        reviewer:
-          # Required GitHub App identity. The App needs:
-          #   - Pull requests: read/write (reviews and comments)
-          #   - Contents: read (on the base repository, for
-          #     .github/review_instructions.md and file inspection)
-          appId: '123456'
-          installationId: '987654'
-          privateKeyPath: '/etc/dsh/github-app.pem'
-          # Optional. Defaults shown below.
-          baseUrl: 'https://api.github.com'
-          webUrl: 'https://github.com'
-          pollIntervalMs: 120000
-          repositories:
-            - 'owner/repo'
-          review:
-            maxToolCalls: 30
-            toolTimeoutMs: 30000
-            toolResultLimit: 60000
-            # Overall deadline for one review/chat turn; the agent is
-            # cancelled past it.
-            timeoutMs: 900000
-            # Optional fallback used only when the base repository has no
-            # .github/review_instructions.md at the PR base.
-            defaultInstructions: |
-              Review this pull request for correctness, regressions, security issues,
-              and missing tests. Leave concise inline comments where useful.
-          # Required per-turn GitHub MCP server. The plugin injects
-          # GITHUB_PERSONAL_ACCESS_TOKEN and GITHUB_HOST at runtime; do not
-          # put GitHub tokens here.
-          mcp:
-            command: 'github-mcp-server'
-            args:
-              - 'stdio'
-              - '--tools=pull_request_read,get_file_contents,pull_request_review_write,add_comment_to_pending_review'
-            env: {}
-            cwd: ''
-          # Optional cursor state file; defaults to
-          # ./.dsh-github-reviewer/<account>.json next to the process.
-          statePath: ''
+# A second account is just another plugin instance with its own config.
+- id: github-reviewer-personal
+  name: '@lingobridge/dsh-github-reviewer'
+  config:
+    name: personal
+    appId: '654321'
+    installationId: '123456'
+    privateKeyPath: '/etc/dsh/github-app-2.pem'
+    repositories:
+      - 'another/owner'
+    mcp:
+      command: 'github-mcp-server'
+      args:
+        - 'stdio'
+        - '--tools=pull_request_read,get_file_contents,pull_request_review_write,add_comment_to_pending_review'

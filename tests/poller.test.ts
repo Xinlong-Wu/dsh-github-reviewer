@@ -20,6 +20,7 @@ const pr: PullRequest = {
 }
 
 const account: ResolvedAccountConfig = {
+  name: 'reviewer',
   appId: '1',
   installationId: '2',
   privateKeyPath: '/unused.pem',

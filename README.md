@@ -49,63 +49,64 @@ peer 依赖：`@deepseek-ai/cordis`（harness 的 Cordis 运行时）。
 
 ## 配置
 
-在 harness 的 `cordis.yml` 中挂载插件：
+在 harness 的 `cordis.yml` 中挂载插件，**每个账户一个插件实例**（扁平配置、多实例模式）：
 
 ```yaml
-plugins:
-  github-reviewer:
-    config:
-      accounts:
-        reviewer:
-          appId: '123456'
-          installationId: '987654'
-          privateKeyPath: '/etc/dsh/github-app.pem'
-          baseUrl: 'https://api.github.com'      # 可选
-          webUrl: 'https://github.com'           # 可选
-          pollIntervalMs: 120000                 # 可选，默认 2 分钟
-          repositories:
-            - 'owner/repo'
-          review:                                # 全部可选
-            maxToolCalls: 30
-            toolTimeoutMs: 30000
-            toolResultLimit: 60000
-            timeoutMs: 900000
-            defaultInstructions: |
-              Review this pull request for correctness, regressions, security issues,
-              and missing tests. Leave concise inline comments where useful.
-          mcp:
-            command: 'github-mcp-server'
-            args:
-              - 'stdio'
-              - '--tools=pull_request_read,get_file_contents,pull_request_review_write,add_comment_to_pending_review'
-            env: {}                              # 可选；GitHub 令牌自动注入
-            cwd: ''                              # 可选
-          statePath: ''                          # 可选；默认 ./.dsh-github-reviewer/<account>.json
+- id: github-reviewer-org
+  name: '@lingobridge/dsh-github-reviewer'
+  config:
+    name: org                             # 账户标签：日志与默认 statePath
+    appId: '123456'
+    installationId: '987654'
+    privateKeyPath: '/etc/dsh/github-app.pem'
+    baseUrl: 'https://api.github.com'      # 可选
+    webUrl: 'https://github.com'           # 可选
+    pollIntervalMs: 120000                 # 可选，默认 2 分钟
+    repositories:
+      - 'owner/repo'
+    review:                                # 全部可选
+      maxToolCalls: 30
+      toolTimeoutMs: 30000
+      toolResultLimit: 60000
+      timeoutMs: 900000
+      defaultInstructions: |
+        Review this pull request for correctness, regressions, security issues,
+        and missing tests. Leave concise inline comments where useful.
+    mcp:
+      command: 'github-mcp-server'
+      args:
+        - 'stdio'
+        - '--tools=pull_request_read,get_file_contents,pull_request_review_write,add_comment_to_pending_review'
+      env: {}                              # 可选；GitHub 令牌自动注入
+      cwd: ''                              # 可选
+    statePath: ''                          # 可选；默认 ./.dsh-github-reviewer/<name>.json
 ```
 
-多个账户各自运行独立的轮询循环。
+多账户 = 再挂一行相同 `name` 的插件实例，各自独立轮询。
 
 ### 配置参考
 
 | 字段 | 默认值 | 说明 |
 |---|---|---|
-| `accounts.<name>.appId` | — | GitHub App ID（必填） |
-| `accounts.<name>.installationId` | — | 用于生成安装令牌的 GitHub App 安装 ID（必填） |
-| `accounts.<name>.privateKeyPath` | — | 用于签名 GitHub App JWT 的本地 PEM 私钥路径（必填） |
-| `accounts.<name>.baseUrl` | `https://api.github.com` | GitHub REST API 基础 URL |
-| `accounts.<name>.webUrl` | `https://github.com` | GitHub web URL 及 MCP 的 `GITHUB_HOST` 值 |
-| `accounts.<name>.pollIntervalMs` | `120000` | PR 轮询间隔 |
-| `accounts.<name>.repositories` | — | `owner/repo` 形式的仓库白名单；至少一个（必填） |
-| `accounts.<name>.review.maxToolCalls` | `30` | 单次评审回合的工具调用预算；超限被守卫拒绝 |
-| `accounts.<name>.review.toolTimeoutMs` | `30000` | 单次工具调用超时 |
-| `accounts.<name>.review.toolResultLimit` | `60000` | 每次调用返回给模型的最大工具结果字符数 |
-| `accounts.<name>.review.timeoutMs` | `900000` | 单回合总截止时间；超时后取消 agent |
-| `accounts.<name>.review.defaultInstructions` | — | 仅当基础仓库缺少 `.github/review_instructions.md` 时使用的兜底指令 |
-| `accounts.<name>.mcp.command` | — | 启动每回合 GitHub MCP server 的命令（必填） |
-| `accounts.<name>.mcp.args` | — | server 参数；请显式包含 `--tools=...`（必填） |
-| `accounts.<name>.mcp.env` | `{}` | 额外的 MCP server 环境变量；GitHub 令牌自动注入 |
-| `accounts.<name>.mcp.cwd` | — | server 的可选工作目录 |
-| `accounts.<name>.statePath` | `./.dsh-github-reviewer/<name>.json` | 游标状态文件路径 |
+| `name` | `default` | 账户标签，用于日志与默认游标文件路径 |
+| `appId` | — | GitHub App ID（必填） |
+| `installationId` | — | 用于生成安装令牌的 GitHub App 安装 ID（必填） |
+| `privateKeyPath` | — | 用于签名 GitHub App JWT 的本地 PEM 私钥路径（必填） |
+| `baseUrl` | `https://api.github.com` | GitHub REST API 基础 URL |
+| `webUrl` | `https://github.com` | GitHub web URL 及 MCP 的 `GITHUB_HOST` 值 |
+| `pollIntervalMs` | `120000` | PR 轮询间隔 |
+| `repositories` | — | `owner/repo` 形式的仓库白名单；至少一个（必填） |
+| `review.maxToolCalls` | `30` | 单次评审回合的工具调用预算；超限被守卫拒绝 |
+| `review.toolTimeoutMs` | `30000` | 单次工具调用超时 |
+| `review.toolResultLimit` | `60000` | 每次调用返回给模型的最大工具结果字符数 |
+| `review.timeoutMs` | `900000` | 单回合总截止时间；超时后取消 agent |
+| `review.defaultInstructions` | — | 仅当基础仓库缺少 `.github/review_instructions.md` 时使用的兜底指令 |
+| `mcp.command` | — | 启动每回合 GitHub MCP server 的命令（必填） |
+| `mcp.args` | — | server 参数；请显式包含 `--tools=...`（必填） |
+| `mcp.env` | `{}` | 额外的 MCP server 环境变量；GitHub 令牌自动注入 |
+| `mcp.cwd` | — | server 的可选工作目录 |
+| `statePath` | `./.dsh-github-reviewer/<name>.json` | 游标状态文件路径 |
+
 
 配置错误会在加载时响亮失败：缺少凭证、无效的仓库名、无法读取的私钥、缺少 MCP command/args 都会在激活时报错，而不是静默跳过评审。
 

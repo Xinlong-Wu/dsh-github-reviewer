@@ -25,7 +25,7 @@ import { AccountPoller, cordisLogger } from './poller.ts'
 import { JsonFileCursorStore } from './state-file.ts'
 
 export { Config }
-export type { Config as GithubReviewerConfig, AccountConfig, McpConfig, ResolvedAccountConfig, ReviewConfig } from './config.ts'
+export type { Config as GithubReviewerConfig, McpConfig, ResolvedAccountConfig, ReviewConfig } from './config.ts'
 export type { ReviewGuardState, TurnSlot } from './github/guard.ts'
 export type { PullRequest, Repository, ReviewInstructions } from './github/model.ts'
 export type { TokenSource } from './github/auth.ts'
@@ -38,57 +38,56 @@ export const name = 'github-reviewer'
 export const inject = ['agents', 'sessions', 'agentDefaultModel']
 
 /**
- * Start one poll loop per configured account. Each account's configuration
- * is validated and its private key loaded before activation: misconfiguration
- * fails the plugin at load instead of skipping reviews silently. One live
- * Agent per PR is created on first contact and resumed from session
- * persistence after a restart when a persistence provider is mounted.
+ * Start the poll loop for this instance's account (mount the plugin once per
+ * account). The account's configuration is validated and its private key
+ * loaded before activation: misconfiguration fails the plugin at load instead
+ * of skipping reviews silently. One live Agent per PR is created on first
+ * contact and resumed from session persistence after a restart when a
+ * persistence provider is mounted.
  * @param ctx - plugin context carrying the agent registry and session store.
- * @param config - resolved plugin configuration.
- * @returns activation after every account has loaded its cursor state.
+ * @param config - resolved plugin configuration for this account.
+ * @returns activation after the account's cursor state has loaded.
  */
 export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
   const sessionPersistence = ctx.get('sessionPersistence')
-  for (const [accountName, rawAccount] of Object.entries(config.accounts)) {
-    const account = normalizeAccountConfig(rawAccount)
-    validateAccountRuntime(accountName, account)
+  const account = normalizeAccountConfig(config)
+  validateAccountRuntime(account.name, account)
 
-    const tokenSource = await AppTokenSource.fromFile(
-      account.appId,
-      account.installationId,
-      account.privateKeyPath,
-      account.baseUrl,
-    )
-    const client = new GitHubClient(account.baseUrl, tokenSource)
-    const store = new JsonFileCursorStore(
-      account.statePath === '' ? JsonFileCursorStore.defaultPath(accountName) : account.statePath,
-    )
-    await store.load()
+  const tokenSource = await AppTokenSource.fromFile(
+    account.appId,
+    account.installationId,
+    account.privateKeyPath,
+    account.baseUrl,
+  )
+  const client = new GitHubClient(account.baseUrl, tokenSource)
+  const store = new JsonFileCursorStore(
+    account.statePath === '' ? JsonFileCursorStore.defaultPath(account.name) : account.statePath,
+  )
+  await store.load()
 
-    const logger = cordisLogger(ctx.logger)
-    ctx.effect(() => {
-      const runner = new AgentRunner({
-        accountName,
-        account,
-        agents: ctx.agents,
-        sessions: ctx.sessions,
-        agentDefaultModel: ctx.agentDefaultModel,
-        ...sessionPersistence === undefined ? {} : { sessionPersistence },
-        tokenSource,
-        logger,
-      })
-      const poller = new AccountPoller({
-        accountName,
-        account,
-        client,
-        tokenSource,
-        store,
-        driver: runner,
-        logger,
-      })
-      poller.start()
-      logger.info(`starting github account=${accountName} repos=${account.repositories.length} poll_interval_ms=${account.pollIntervalMs}`)
-      return () => poller.dispose()
-    }, `github-reviewer.${accountName}`)
-  }
+  const logger = cordisLogger(ctx.logger)
+  ctx.effect(() => {
+    const runner = new AgentRunner({
+      accountName: account.name,
+      account,
+      agents: ctx.agents,
+      sessions: ctx.sessions,
+      agentDefaultModel: ctx.agentDefaultModel,
+      ...sessionPersistence === undefined ? {} : { sessionPersistence },
+      tokenSource,
+      logger,
+    })
+    const poller = new AccountPoller({
+      accountName: account.name,
+      account,
+      client,
+      tokenSource,
+      store,
+      driver: runner,
+      logger,
+    })
+    poller.start()
+    logger.info(`starting github account=${account.name} repos=${account.repositories.length} poll_interval_ms=${account.pollIntervalMs}`)
+    return () => poller.dispose()
+  }, `github-reviewer.${account.name}`)
 }

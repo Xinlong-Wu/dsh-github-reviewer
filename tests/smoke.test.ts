@@ -24,20 +24,17 @@ async function tempKeyPath(): Promise<string> {
 
 function validConfig(keyPath: string, overrides: Record<string, unknown> = {}): Config {
   return {
-    accounts: {
-      reviewer: {
-        appId: '123',
-        installationId: '456',
-        privateKeyPath: keyPath,
-        baseUrl: 'https://api.github.com',
-        webUrl: 'https://github.com',
-        pollIntervalMs: 120000,
-        repositories: ['owner/repo'],
-        mcp: { command: 'github-mcp-server', args: ['stdio'], env: {}, cwd: '' },
-        statePath: join(dir, 'cursor.json'),
-        ...overrides,
-      },
-    },
+    name: 'reviewer',
+    appId: '123',
+    installationId: '456',
+    privateKeyPath: keyPath,
+    baseUrl: 'https://api.github.com',
+    webUrl: 'https://github.com',
+    pollIntervalMs: 120000,
+    repositories: ['owner/repo'],
+    mcp: { command: 'github-mcp-server', args: ['stdio'], env: {}, cwd: '' },
+    statePath: join(dir, 'cursor.json'),
+    ...overrides,
   }
 }
 
@@ -107,11 +104,9 @@ describe('plugin wiring through a real Cordis context', () => {
     await expect(ctx.plugin(plugin, validConfig(keyPath, { mcp: { command: '', args: [] } }))).rejects.toThrow('mcp.command is required')
   })
 
-  it('activates with zero accounts as a no-op', async () => {
+  it('fails activation on an empty config', async () => {
     const ctx = new Context()
     provideCoreServices(ctx)
-    const fiber = await ctx.plugin(plugin, { accounts: {} })
-    await fiber.dispose()
-    expect(fiber.state).toBe(4) // FiberState.DISPOSED (const enum, not usable as a runtime value)
+    await expect(ctx.plugin(plugin, {} as Config)).rejects.toThrow('appId is required')
   })
 })
