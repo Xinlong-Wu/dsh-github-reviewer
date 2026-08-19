@@ -82,21 +82,6 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
 
     const logger = cordisLogger(ctx.logger)
 
-    // Register the account's review-session directory as a harness workspace
-    // when the deployment mounts the `workspace` service (the web profile
-    // does): review-agent sessions carry this directory as their cwd, so they
-    // group under the workspace title instead of the ungrouped bucket. This
-    // is best-effort — a registration failure only degrades session grouping.
-    const workspace = ctx.get('workspace')
-    if (workspace !== undefined) {
-      try {
-        await mkdir(account.workspaceDir, { recursive: true })
-        await workspace.create(account.workspaceDir, account.workspaceTitle)
-        logger.info(`registered github reviewer workspace title=${account.workspaceTitle} dir=${account.workspaceDir}`)
-      } catch (error) {
-        logger.warn(`github reviewer workspace registration failed: ${String(error)}`)
-      }
-    }
     ctx.effect(() => {
       // Read the optional services inside the effect so the wiring does not
       // depend on plugin mount order at apply time.
@@ -127,7 +112,38 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
       poller.start()
       activeAccounts.add(account.name)
       logger.info(`starting github account=${account.name} repos=${account.repositories.length} poll_interval_ms=${account.pollIntervalMs}`)
+
+      // Review-session directory: created unconditionally (review agents use
+      // it as their session cwd), then registered as a harness workspace once
+      // the `workspace` service is up. The service (web-app bundle) can
+      // activate after this plugin's own required services, so a synchronous
+      // read at apply time would race and lose; retry briefly, aborting on
+      // dispose. Best-effort — a failure only degrades session grouping.
+      const workspaceAbort = new AbortController()
+      void (async () => {
+        try {
+          await mkdir(account.workspaceDir, { recursive: true })
+        } catch (error) {
+          logger.warn(`github reviewer workspace dir creation failed: ${String(error)}`)
+        }
+        for (let attempt = 0; attempt < 10 && !workspaceAbort.signal.aborted; attempt++) {
+          const workspace = ctx.get('workspace')
+          if (workspace !== undefined) {
+            try {
+              await workspace.create(account.workspaceDir, account.workspaceTitle)
+              logger.info(`registered github reviewer workspace title=${account.workspaceTitle} dir=${account.workspaceDir}`)
+            } catch (error) {
+              logger.warn(`github reviewer workspace registration failed: ${String(error)}`)
+            }
+            return
+          }
+          await delay(500, workspaceAbort.signal)
+        }
+        logger.debug('workspace service not mounted; review sessions stay ungrouped')
+      })()
+
       return async () => {
+        workspaceAbort.abort()
         activeAccounts.delete(account.name)
         await poller.dispose()
         await domain.close()
@@ -137,4 +153,20 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
     await domain.close()
     throw error
   }
+}
+
+/** Resolve after `ms` milliseconds, or immediately when the signal aborts. */
+function delay(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve) => {
+    if (signal.aborted) return resolve()
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    const onAbort = () => {
+      clearTimeout(timer)
+      resolve()
+    }
+    signal.addEventListener('abort', onAbort)
+  })
 }
