@@ -18,8 +18,21 @@ describe('sanitizeReviewPromptText', () => {
   })
 
   it('redacts GitHub token-like strings', () => {
-    expect(sanitizeReviewPromptText('token ghp_abcdefghijklmnopqrstuvwxyz end')).toContain('[REDACTED_GITHUB_TOKEN]')
-    expect(sanitizeReviewPromptText('github_pat_abcdefghijklmnopqrstuvwxyz')).toContain('[REDACTED_GITHUB_TOKEN]')
+    expect(sanitizeReviewPromptText('token ghp_abcdefghijklmnopqrstuvwxyz end')).toContain('[REDACTED_SECRET]')
+    expect(sanitizeReviewPromptText('github_pat_abcdefghijklmnopqrstuvwxyz')).toContain('[REDACTED_SECRET]')
+    expect(sanitizeReviewPromptText('short ghp_abc123XYZ_ token')).toContain('[REDACTED_SECRET]')
+  })
+
+  it('redacts AWS access keys and PEM private keys', () => {
+    expect(sanitizeReviewPromptText('key AKIAIOSFODNN7EXAMPLE here')).toContain('[REDACTED_SECRET]')
+    const pem = '-----BEGIN RSA PRIVATE KEY-----\nMIIabc\n-----END RSA PRIVATE KEY-----'
+    expect(sanitizeReviewPromptText(`before ${pem} after`)).toBe('before [REDACTED_SECRET] after')
+  })
+
+  it('does not mangle code samples that merely look like hidden attributes', () => {
+    expect(sanitizeReviewPromptText('const title = "hello world"')).toBe('const title = "hello world"')
+    expect(sanitizeReviewPromptText('{ "data-id": "5", "alt": 1 }')).toBe('{ "data-id": "5", "alt": 1 }')
+    expect(sanitizeReviewPromptText('placeholder="x" in prose')).toBe('placeholder="x" in prose')
   })
 
   it('decodes printable ASCII entities and drops non-printable ones', () => {

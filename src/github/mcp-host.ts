@@ -45,6 +45,9 @@ export interface McpHost {
   close(): Promise<void>
 }
 
+/** Cap for MCP error text returned to the model (success paths use `resultLimit`). */
+const MCP_ERROR_TEXT_LIMIT = 4000
+
 /** One text output of an MCP call, if any. */
 function extractText(content: unknown): { text: string; isError: boolean } {
   if (!Array.isArray(content)) return { text: '', isError: false }
@@ -57,6 +60,11 @@ function extractText(content: unknown): { text: string; isError: boolean } {
   return { text, isError: false }
 }
 
+/** Bound text returned to the model, collapsing nothing but the length. */
+function boundText(text: string, limit: number): string {
+  return text.length > limit ? `${text.slice(0, limit)}\n...[tool result truncated]` : text
+}
+
 /** Stdio MCP host for one review run. */
 export class StdioMcpHost implements McpHost {
   private readonly client: Client
@@ -67,11 +75,15 @@ export class StdioMcpHost implements McpHost {
    * @param config - server spawn parameters.
    * @param toolTimeoutMs - per-call timeout applied to every MCP request.
    * @param resultLimit - maximum characters returned to the model per call.
+   * @param onStderrLine - consumer for server stderr lines; the SDK pipes
+   *   stderr into a PassThrough that would otherwise fill up and block the
+   *   server process, so the stream must be drained.
    */
   private constructor(
     config: McpServerConfig,
     private readonly toolTimeoutMs: number,
     private readonly resultLimit: number,
+    onStderrLine?: (line: string) => void,
   ) {
     this.client = new Client(
       { name: 'dsh-github-reviewer', version: '0.1.0' },
@@ -84,26 +96,66 @@ export class StdioMcpHost implements McpHost {
       cwd: config.cwd === '' ? undefined : config.cwd,
       stderr: 'pipe',
     })
+    this.drainStderr(onStderrLine)
+  }
+
+  /** Drain the server's stderr stream line by line into the sink. */
+  private drainStderr(onStderrLine: ((line: string) => void) | undefined): void {
+    const stream = this.transport.stderr
+    if (stream === null) return
+    let pending = ''
+    stream.on('data', (chunk: Buffer | string) => {
+      pending += chunk.toString()
+      let newline = pending.indexOf('\n')
+      while (newline >= 0) {
+        const line = pending.slice(0, newline).trim()
+        if (line !== '') onStderrLine?.(line)
+        pending = pending.slice(newline + 1)
+        newline = pending.indexOf('\n')
+      }
+      // Bound the pending fragment so a server without newlines cannot grow it forever.
+      if (pending.length > MCP_ERROR_TEXT_LIMIT) pending = pending.slice(-MCP_ERROR_TEXT_LIMIT)
+    })
   }
 
   /**
    * Spawn the server and complete the MCP handshake.
    * @param config - server spawn parameters.
-   * @param toolTimeoutMs - per-call timeout in milliseconds.
+   * @param toolTimeoutMs - per-call timeout in milliseconds; also bounds the handshake.
    * @param resultLimit - maximum characters returned to the model per call.
+   * @param signal - optional cancellation for the handshake.
+   * @param onStderrLine - optional consumer for server stderr lines.
    * @returns a connected host; the caller owns `close()`.
    */
   static async connect(
     config: McpServerConfig,
     toolTimeoutMs: number,
     resultLimit: number,
+    signal?: AbortSignal,
+    onStderrLine?: (line: string) => void,
   ): Promise<StdioMcpHost> {
-    const host = new StdioMcpHost(config, toolTimeoutMs, resultLimit)
+    const host = new StdioMcpHost(config, toolTimeoutMs, resultLimit, onStderrLine)
+    // A pre-aborted signal never fires an 'abort' event for listeners
+    // registered afterwards, so check it explicitly before racing.
+    if (signal?.aborted) {
+      await host.close()
+      throw new Error('connect github mcp server: handshake aborted before connect')
+    }
+    const handshake = AbortSignal.any([AbortSignal.timeout(toolTimeoutMs), ...(signal === undefined ? [] : [signal])])
+    let onAbort: (() => void) | undefined
+    const aborted = new Promise<never>((_, reject) => {
+      onAbort = () => reject(new Error(`connect github mcp server: handshake aborted or timed out after ${toolTimeoutMs}ms`))
+      handshake.addEventListener('abort', onAbort, { once: true })
+    })
     try {
-      await host.client.connect(host.transport)
+      await Promise.race([host.client.connect(host.transport), aborted])
     } catch (error) {
       await host.close()
-      throw new Error(`connect github mcp server: ${String(error)}`)
+      throw error instanceof Error && error.message.startsWith('connect github mcp server')
+        ? error
+        : new Error(`connect github mcp server: ${String(error)}`)
+    } finally {
+      if (onAbort !== undefined) handshake.removeEventListener('abort', onAbort)
     }
     return host
   }
@@ -152,13 +204,11 @@ export class StdioMcpHost implements McpHost {
       const extracted = extractText(result.content)
       const rawText = extracted.text
       const isError = extracted.isError || result.isError === true
-      const bounded = rawText.length > this.resultLimit
-        ? `${rawText.slice(0, this.resultLimit)}\n...[tool result truncated]`
-        : rawText
-      return { content: bounded, isError }
+      return { content: boundText(rawText, this.resultLimit), isError }
     } catch (error) {
       if (signal.aborted) throw error
-      return { content: `github mcp tool ${remoteName} failed: ${String(error)}`, isError: true }
+      const message = `github mcp tool ${remoteName} failed: ${String(error)}`
+      return { content: boundText(message, Math.min(this.resultLimit, MCP_ERROR_TEXT_LIMIT)), isError: true }
     }
   }
 

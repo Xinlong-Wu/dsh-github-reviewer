@@ -12,6 +12,7 @@ import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
 import type { McpHost, RawMcpTool } from './mcp-host.ts'
 import type { PullRequest, Repository, ReviewInstructions } from './model.ts'
 import { fullName, sameRepo, shortSHA } from './model.ts'
+import { redactSecrets } from './sanitizer.ts'
 
 /** Prefix of model-facing guarded tool names (`mcp_github_<remote>`). */
 export const GITHUB_MCP_TOOL_PREFIX = 'mcp_github_'
@@ -31,6 +32,15 @@ const ALLOWED_REVIEW_READ_METHOD_LIST = ['get', 'get_diff', 'get_files', 'get_st
 /** Log-line cap for error summaries. */
 const REVIEW_LOG_TEXT_LIMIT = 500
 
+/** Write tools unavailable while the turn is a `/bot` chat flow. */
+const CHAT_FORBIDDEN_WRITE_TOOLS = new Set(['pull_request_review_write', 'add_comment_to_pending_review'])
+
+/** The keys a `submit_pending` call may carry after normalization. */
+const REVIEW_SUBMIT_ALLOWED_KEYS = new Set(['owner', 'repo', 'pullNumber', 'method', 'event', 'body'])
+
+/** Cap for changed-file pagination when scoping base-side file reads. */
+const CHANGED_FILES_MAX_PAGES = 50
+
 /**
  * Write-tracking state for one review turn. The caller reads
  * {@link submittedComment} to decide whether the cursor may be marked
@@ -44,6 +54,10 @@ export class ReviewGuardState {
   inlineCommentsAdded = 0
   submitAttempted = false
   toolCallsExecuted = 0
+  /** Lazily fetched set of files changed by the PR; scopes base-side file reads. */
+  changedFiles?: Set<string>
+  /** True when the changed-file list could not be fetched (base-side reads fail closed). */
+  changedFilesFailed = false
 }
 
 /**
@@ -94,6 +108,11 @@ function intArg(args: Record<string, unknown>, key: string): { value: number; ok
 function summarizeReviewLogText(text: string, limit: number): string {
   const collapsed = text.replace(/\s+/g, ' ').trim()
   return collapsed.length <= limit ? collapsed : `${collapsed.slice(0, limit)}...`
+}
+
+/** Strip control and format characters from a model-controlled value before it enters a log line. */
+function logSafe(value: string): string {
+  return value.replace(/[\p{Cc}\p{Cf}]/gu, '')
 }
 
 function reviewLogTextChars(text: string): number {
@@ -189,6 +208,81 @@ function validateFileContentsArgs(args: Record<string, unknown>, pr: PullRequest
   args.ref = undefined
 }
 
+/**
+ * Whether a validated `get_file_contents` call reads base-side content (the
+ * base branch or base SHA on the base repository). Base-side content may
+ * contain secrets the PR author cannot otherwise read; head-side content is
+ * the PR author's own and carries no exfiltration risk.
+ */
+function isBaseSideContent(args: Record<string, unknown>, pr: PullRequest): boolean {
+  const target = { owner: stringArg(args, 'owner').value, name: stringArg(args, 'repo').value }
+  if (!sameRepo(target, pr.base.repo)) return false
+  const sha = stringArg(args, 'sha')
+  if (sha.ok) return sha.value === pr.base.sha.trim()
+  const ref = stringArg(args, 'ref')
+  if (ref.ok) return branchRefMatches(ref.value, pr.base.ref)
+  return false
+}
+
+/**
+ * Fetch (once per turn) the set of paths changed by the PR, used to scope
+ * base-side file reads. Fails closed: when the list cannot be fetched, the
+ * state records the failure and base-side reads are rejected.
+ */
+async function ensureChangedFiles(turn: NonNullable<TurnSlot['current']>, logger: GuardLogger): Promise<Set<string>> {
+  if (turn.state.changedFiles !== undefined) return turn.state.changedFiles
+  if (turn.state.changedFilesFailed) {
+    throw new Error('get_file_contents on base-side content requires the PR changed-file list, which failed to load')
+  }
+  const files = new Set<string>()
+  try {
+    for (let page = 1; page <= CHANGED_FILES_MAX_PAGES; page++) {
+      const result = await turn.host.call('pull_request_read', {
+        owner: turn.pr.base.repo.owner,
+        repo: turn.pr.base.repo.name,
+        pullNumber: turn.pr.number,
+        method: 'get_files',
+        perPage: 100,
+        page,
+      }, AbortSignal.timeout(30_000))
+      if (result.isError) throw new Error(`get_files failed: ${summarizeReviewLogText(result.content, 200)}`)
+      const parsed: unknown = JSON.parse(result.content)
+      if (!Array.isArray(parsed)) throw new Error('get_files returned a non-array payload')
+      for (const entry of parsed) {
+        if (typeof entry !== 'object' || entry === null) continue
+        const record = entry as { filename?: unknown; previous_filename?: unknown }
+        if (typeof record.filename === 'string' && record.filename !== '') files.add(record.filename)
+        if (typeof record.previous_filename === 'string' && record.previous_filename !== '') files.add(record.previous_filename)
+      }
+      if (parsed.length < 100) break
+    }
+  } catch (error) {
+    turn.state.changedFilesFailed = true
+    logger.warn(`github review changed-file list unavailable repo=${fullName(turn.pr.base.repo)} number=${turn.pr.number}: ${String(error)}`)
+    throw new Error('get_file_contents on base-side content requires the PR changed-file list, which failed to load')
+  }
+  turn.state.changedFiles = files
+  logger.debug(`github review changed-file list loaded repo=${fullName(turn.pr.base.repo)} number=${turn.pr.number} files=${files.size}`)
+  return files
+}
+
+/**
+ * Scope base-side file reads to the paths changed by the PR: reading
+ * base-branch secrets through prompt injection is the reviewer's main
+ * confused-deputy risk, so base-side content is only served for files the PR
+ * actually touches. Head-side content is unrestricted.
+ */
+async function assertFileReadScope(args: Record<string, unknown>, turn: NonNullable<TurnSlot['current']>, logger: GuardLogger): Promise<void> {
+  if (!isBaseSideContent(args, turn.pr)) return
+  const path = stringArg(args, 'path')
+  if (!path.ok) throw new Error('get_file_contents on base-side content requires an explicit path')
+  const normalized = path.value.replace(/^\.\//, '')
+  const changed = await ensureChangedFiles(turn, logger)
+  if (!changed.has(normalized)) {
+    throw new Error('get_file_contents on base-side content is limited to files changed by the current PR')
+  }
+}
+
 /** The keys a pending-review `create` call may carry after normalization. */
 const REVIEW_CREATE_ALLOWED_KEYS = new Set(['owner', 'repo', 'pullNumber', 'method', 'commitID'])
 
@@ -241,7 +335,19 @@ function validateReviewWriteArgs(args: Record<string, unknown>, pr: PullRequest,
       if (!event.ok || event.value !== 'COMMENT') {
         throw new Error('pull_request_review_write submit_pending is only allowed with event=COMMENT')
       }
-      return args
+      const cleaned: Record<string, unknown> = {}
+      for (const key of Object.keys(args)) {
+        if (REVIEW_SUBMIT_ALLOWED_KEYS.has(key)) cleaned[key] = args[key]
+      }
+      const dropped = Object.keys(args).length - Object.keys(cleaned).length
+      if (dropped > 0) {
+        logger.warn(
+          `normalized submit_pending repo=${fullName(pr.base.repo)} number=${pr.number} dropped_extra_args=${dropped}`,
+        )
+      }
+      const body = stringArg(cleaned, 'body')
+      if (body.ok) cleaned.body = redactSecrets(body.value)
+      return cleaned
     }
     default:
       throw new Error(`pull_request_review_write method "${method.value}" is not allowed`)
@@ -256,6 +362,8 @@ function validateReviewCommentArgs(args: Record<string, unknown>): void {
   }
   const body = stringArg(args, 'body')
   if (!body.ok) throw new Error('body is required')
+  // Redact secret-looking strings before model-written text leaves as a comment.
+  args.body = redactSecrets(body.value)
   const subjectType = stringArg(args, 'subjectType')
   if (!subjectType.ok) throw new Error('subjectType is required')
   switch (subjectType.value) {
@@ -265,15 +373,22 @@ function validateReviewCommentArgs(args: Record<string, unknown>): void {
       return
     }
     case 'LINE': {
-      if (!intArg(args, 'line').ok) throw new Error('line is required for LINE comments')
+      const line = intArg(args, 'line')
+      if (!line.ok) throw new Error('line is required for LINE comments')
+      if (line.value < 1) throw new Error('line must be a positive integer')
       const side = stringArg(args, 'side')
       if (!side.ok || !validReviewCommentSide(side.value)) {
         throw new Error('side must be LEFT or RIGHT for LINE comments')
       }
-      const hasStartLine = intArg(args, 'startLine').ok
+      const startLine = intArg(args, 'startLine')
       const startSide = stringArg(args, 'startSide')
-      if (hasStartLine !== startSide.ok) {
+      if (startLine.ok !== startSide.ok) {
         throw new Error('startLine and startSide must be provided together for multi-line comments')
+      }
+      if (startLine.ok) {
+        if (startLine.value < 1 || startLine.value > line.value) {
+          throw new Error('startLine must be a positive integer not greater than line')
+        }
       }
       if (startSide.ok && !validReviewCommentSide(startSide.value)) {
         throw new Error('startSide must be LEFT or RIGHT')
@@ -293,6 +408,7 @@ function appendGetFileContentsGuardDescription(description: string, pr: PullRequ
     `sha may only be the current base SHA (${pr.base.sha}) or head SHA (${pr.head.sha}).`,
     `ref may only be the matching current PR branch ref (base "${pr.base.ref}" or head "${pr.head.ref}"), refs/heads/<that branch>, refs/pull/${pr.number}/head on the base repo, or one of those SHAs.`,
     'If neither sha nor ref is provided, the guard defaults to the current head SHA.',
+    'Reads of base-side content (base branch or base SHA on the base repo) are limited to files changed by this PR; head-side content is unrestricted.',
   ].join(' ')
   return trimmed === '' ? guard : `${trimmed}\n\n${guard}`
 }
@@ -392,8 +508,12 @@ function buildGuardedTool(
     async execute(args, exec): Promise<GuardedToolValue> {
       const turn = slot.current
       if (turn === undefined) throw new Error('github reviewer turn is not active')
+      if (turn.flow === 'chat' && CHAT_FORBIDDEN_WRITE_TOOLS.has(remote)) {
+        throw new Error('github review write tools are not available during /bot chat turns')
+      }
       const parsed = (typeof args === 'object' && args !== null ? args : {}) as Record<string, unknown>
       const sanitized = validateAndMutate(remote, parsed, turn.pr, logger)
+      if (remote === 'get_file_contents') await assertFileReadScope(sanitized, turn, logger)
       if (turn.state.toolCallsExecuted >= limits.maxToolCalls) {
         throw new Error(`github review hit the max_tool_calls limit (${limits.maxToolCalls})`)
       }
@@ -486,7 +606,7 @@ function recordWriteResult(
       const side = stringArg(args, 'side').value
       const startSide = stringArg(args, 'startSide').value
       const label = `repo=${fullName(turn.pr.base.repo)} number=${turn.pr.number} head=${shortSHA(turn.pr.head.sha)}`
-      const position = `path=${path} subject_type=${subjectType} start_line=${startLine.ok ? String(startLine.value) : ''} line=${line.ok ? String(line.value) : ''} start_side=${startSide} side=${side}`
+      const position = `path=${logSafe(path)} subject_type=${subjectType} start_line=${startLine.ok ? String(startLine.value) : ''} line=${line.ok ? String(line.value) : ''} start_side=${logSafe(startSide)} side=${logSafe(side)}`
       if (result.isError) {
         logger.warn(`github pending review comment failed ${label} ${position} body_chars=${bodyChars} error=${summarizeReviewLogText(result.content, REVIEW_LOG_TEXT_LIMIT)}`)
         return

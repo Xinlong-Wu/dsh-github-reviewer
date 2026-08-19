@@ -30,18 +30,25 @@ interface RecordedCall {
 function setup(
   tools: RawMcpTool[],
   hostResult: McpCallOutcome = { content: 'ok', isError: false },
+  options: { changedFiles?: string[]; flow?: 'review' | 'chat' } = {},
 ) {
   const state = new ReviewGuardState()
   const calls: RecordedCall[] = []
+  const changedFilesPayload = options.changedFiles === undefined
+    ? undefined
+    : JSON.stringify(options.changedFiles.map(filename => ({ filename })))
   const host: McpHost = {
     listTools: async () => tools,
     call: async (remote, args) => {
       calls.push({ remote, args })
+      if (changedFilesPayload !== undefined && remote === 'pull_request_read' && (args as Record<string, unknown>).method === 'get_files') {
+        return { content: changedFilesPayload, isError: false }
+      }
       return hostResult
     },
     close: async () => {},
   }
-  const slot: TurnSlot = { current: { pr, flow: 'review', state, host } }
+  const slot: TurnSlot = { current: { pr, flow: options.flow ?? 'review', state, host } }
   const definitions = buildGuardedToolDefinitions(tools, pr, slot, limits, silent)
   const byName = new Map(definitions.map(definition => [definition.name, definition]))
   const exec = { signal: new AbortController().signal } as unknown as ToolRunContext
@@ -135,7 +142,7 @@ describe('get_file_contents guard', () => {
   })
 
   it('allows base branch refs, head branch refs, and refs/pull/N/head', async () => {
-    const { definitions, exec } = setup([tool('get_file_contents')])
+    const { definitions, exec } = setup([tool('get_file_contents')], { content: 'ok', isError: false }, { changedFiles: ['a.ts'] })
     for (const [owner, ref] of [
       ['owner', 'main'],
       ['owner', 'refs/heads/main'],
@@ -150,6 +157,64 @@ describe('get_file_contents guard', () => {
     const { definitions, exec } = setup([tool('get_file_contents')])
     await expect(execute(definitions, 'mcp_github_get_file_contents', { owner: 'owner', repo: 'repo', path: 'a.ts', ref: 'feature' }, exec))
       .rejects.toThrow()
+  })
+})
+
+describe('get_file_contents base-side path scoping', () => {
+  it('allows base-side reads only for files changed by the PR', async () => {
+    const { definitions, exec } = setup([tool('get_file_contents')], { content: 'ok', isError: false }, { changedFiles: ['src/a.ts', 'README.md'] })
+    await expect(execute(definitions, 'mcp_github_get_file_contents', { owner: 'owner', repo: 'repo', path: 'src/a.ts', ref: 'main' }, exec))
+      .resolves.toBeDefined()
+    await expect(execute(definitions, 'mcp_github_get_file_contents', { owner: 'owner', repo: 'repo', path: '.env', ref: 'main' }, exec))
+      .rejects.toThrow('limited to files changed by the current PR')
+  })
+
+  it('scopes base SHA reads the same way, but leaves head-side reads unrestricted', async () => {
+    const { definitions, exec } = setup([tool('get_file_contents')], { content: 'ok', isError: false }, { changedFiles: ['src/a.ts'] })
+    await expect(execute(definitions, 'mcp_github_get_file_contents', { owner: 'owner', repo: 'repo', path: '.env', sha: 'base-sha' }, exec))
+      .rejects.toThrow('limited to files changed by the current PR')
+    await expect(execute(definitions, 'mcp_github_get_file_contents', { owner: 'owner', repo: 'repo', path: '.env', sha: 'head-sha' }, exec))
+      .resolves.toBeDefined()
+    await expect(execute(definitions, 'mcp_github_get_file_contents', { owner: 'forker', repo: 'repo', path: '.env', sha: 'head-sha' }, exec))
+      .resolves.toBeDefined()
+  })
+
+  it('requires an explicit path for base-side reads', async () => {
+    const { definitions, exec } = setup([tool('get_file_contents')], { content: 'ok', isError: false }, { changedFiles: ['src/a.ts'] })
+    await expect(execute(definitions, 'mcp_github_get_file_contents', { owner: 'owner', repo: 'repo', ref: 'main' }, exec))
+      .rejects.toThrow('requires an explicit path')
+  })
+
+  it('fails closed when the changed-file list cannot be fetched', async () => {
+    const { definitions, state, exec } = setup([tool('get_file_contents')], { content: 'not json', isError: false })
+    await expect(execute(definitions, 'mcp_github_get_file_contents', { owner: 'owner', repo: 'repo', path: 'src/a.ts', ref: 'main' }, exec))
+      .rejects.toThrow('changed-file list')
+    expect(state.changedFilesFailed).toBe(true)
+  })
+
+  it('fetches the changed-file list only once per turn', async () => {
+    const { definitions, calls, exec } = setup([tool('get_file_contents')], { content: 'ok', isError: false }, { changedFiles: ['src/a.ts'] })
+    await execute(definitions, 'mcp_github_get_file_contents', { owner: 'owner', repo: 'repo', path: 'src/a.ts', ref: 'main' }, exec)
+    await execute(definitions, 'mcp_github_get_file_contents', { owner: 'owner', repo: 'repo', path: 'src/a.ts', sha: 'base-sha' }, exec)
+    const fetches = calls.filter(call => call.remote === 'pull_request_read')
+    expect(fetches).toHaveLength(1)
+    expect(fetches[0].args).toMatchObject({ method: 'get_files', perPage: 100 })
+  })
+})
+
+describe('chat flow restrictions', () => {
+  it('rejects write tools during /bot chat turns', async () => {
+    const { definitions, exec } = setup([tool('pull_request_review_write'), tool('add_comment_to_pending_review')], { content: 'ok', isError: false }, { flow: 'chat' })
+    await expect(execute(definitions, 'mcp_github_pull_request_review_write', { owner: 'owner', repo: 'repo', pullNumber: 42, method: 'create' }, exec))
+      .rejects.toThrow('not available during /bot chat turns')
+    await expect(execute(definitions, 'mcp_github_add_comment_to_pending_review', { owner: 'owner', repo: 'repo', pullNumber: 42, path: 'a.ts', body: 'x', subjectType: 'FILE' }, exec))
+      .rejects.toThrow('not available during /bot chat turns')
+  })
+
+  it('still allows read tools during chat turns', async () => {
+    const { definitions, exec } = setup([tool('pull_request_read')], { content: 'ok', isError: false }, { flow: 'chat' })
+    await expect(execute(definitions, 'mcp_github_pull_request_read', { owner: 'owner', repo: 'repo', pullNumber: 42, method: 'get' }, exec))
+      .resolves.toBeDefined()
   })
 })
 
@@ -189,6 +254,28 @@ describe('pull_request_review_write guard', () => {
     await execute(definitions, 'mcp_github_pull_request_review_write', { owner: 'owner', repo: 'repo', pullNumber: 42, method: 'submit_pending', event: 'COMMENT' }, exec)
     expect(state.submittedComment).toBe(true)
     expect(state.submitAttempted).toBe(true)
+  })
+
+  it('drops extra keys and redacts secret-looking strings in the submit body', async () => {
+    const { definitions, calls, exec } = setup([tool('pull_request_review_write')])
+    await execute(definitions, 'mcp_github_pull_request_review_write', {
+      owner: 'owner',
+      repo: 'repo',
+      pullNumber: 42,
+      method: 'submit_pending',
+      event: 'COMMENT',
+      body: 'found ghp_abcdefghijklmnopqrstuvwxyz leaked',
+      extra: 'smuggled',
+    }, exec)
+    expect(calls[0].args.extra).toBeUndefined()
+    expect(calls[0].args.body).toBe('found [REDACTED_SECRET] leaked')
+  })
+
+  it('does not mark the pending review as created when create fails', async () => {
+    const { definitions, state, exec } = setup([tool('pull_request_review_write')], { content: 'nope', isError: true })
+    await expect(execute(definitions, 'mcp_github_pull_request_review_write', { owner: 'owner', repo: 'repo', pullNumber: 42, method: 'create' }, exec))
+      .rejects.toThrow('nope')
+    expect(state.pendingReviewCreated).toBe(false)
   })
 
   it('throws when the MCP server reports an error, without marking submission', async () => {
@@ -289,6 +376,29 @@ describe('add_comment_to_pending_review guard', () => {
     const { definitions, exec } = setup([commentTool()])
     await expect(execute(definitions, 'mcp_github_add_comment_to_pending_review', { owner: 'owner', repo: 'repo', pullNumber: 42, path: 'a.ts', body: 'fix', subjectType: 'THREAD' }, exec))
       .rejects.toThrow('subjectType must be FILE or LINE')
+  })
+
+  it('rejects non-positive or inverted line ranges', async () => {
+    const { definitions, exec } = setup([commentTool()])
+    await expect(execute(definitions, 'mcp_github_add_comment_to_pending_review', { owner: 'owner', repo: 'repo', pullNumber: 42, path: 'a.ts', body: 'fix', subjectType: 'LINE', line: 0, side: 'RIGHT' }, exec))
+      .rejects.toThrow('positive integer')
+    await expect(execute(definitions, 'mcp_github_add_comment_to_pending_review', { owner: 'owner', repo: 'repo', pullNumber: 42, path: 'a.ts', body: 'fix', subjectType: 'LINE', line: 3, side: 'RIGHT', startLine: 10, startSide: 'RIGHT' }, exec))
+      .rejects.toThrow('not greater than line')
+    await expect(execute(definitions, 'mcp_github_add_comment_to_pending_review', { owner: 'owner', repo: 'repo', pullNumber: 42, path: 'a.ts', body: 'fix', subjectType: 'LINE', line: 3, side: 'RIGHT', startLine: 1, startSide: 'TOP' }, exec))
+      .rejects.toThrow('startSide must be LEFT or RIGHT')
+  })
+
+  it('redacts secrets in inline comment bodies', async () => {
+    const { definitions, calls, exec } = setup([commentTool()])
+    await execute(definitions, 'mcp_github_add_comment_to_pending_review', {
+      owner: 'owner',
+      repo: 'repo',
+      pullNumber: 42,
+      path: 'a.ts',
+      body: 'leaks AKIAIOSFODNN7EXAMPLE here',
+      subjectType: 'FILE',
+    }, exec)
+    expect(calls[0].args.body).toBe('leaks [REDACTED_SECRET] here')
   })
 })
 

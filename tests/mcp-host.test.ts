@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { StdioMcpHost } from '../src/github/mcp-host.ts'
 
 /** Minimal JSON-RPC MCP server over stdio, launched as a child process. */
@@ -33,9 +33,40 @@ rl.on('line', (line) => {
       process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text: 'x'.repeat(200) }], isError: false } }) + '\n');
       return;
     }
+    if (params.name === 'explode') {
+      process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, error: { code: -32000, message: 'E'.repeat(20000) } }) + '\n');
+      return;
+    }
     result = { content: [{ type: 'text', text: 'ok:' + JSON.stringify(params.arguments || {}) }], isError: false };
   }
   process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result }) + '\n');
+});
+`
+
+/** Same stub server, but it writes one line to stderr at startup. */
+const STUB_SERVER_STDERR = `process.stderr.write('boom\\n');\n${STUB_SERVER}`
+
+/** A stub server that parks the handshake: stderr announces initialize, the reply is delayed. */
+const SLOW_STUB_SERVER = String.raw`
+const readline = require('node:readline');
+const rl = readline.createInterface({ input: process.stdin });
+rl.on('line', (line) => {
+  if (!line.trim()) return;
+  let msg;
+  try { msg = JSON.parse(line); } catch { return; }
+  if (msg.id === undefined) return; // notification
+  if (msg.method === 'initialize') {
+    process.stderr.write('handshake-started\n');
+    setTimeout(() => {
+      process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: {
+        protocolVersion: '2024-11-05',
+        capabilities: { tools: {} },
+        serverInfo: { name: 'stub-mcp', version: '1.0.0' },
+      } }) + '\n');
+    }, 10000).unref();
+    return;
+  }
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { tools: [] } }) + '\n');
 });
 `
 
@@ -130,5 +161,66 @@ describe('StdioMcpHost against a real MCP server process', () => {
       5000,
       60000,
     )).rejects.toThrow('connect github mcp server')
+  })
+
+  it('delivers server stderr lines to onStderrLine', async () => {
+    const lines: string[] = []
+    const host = await StdioMcpHost.connect(
+      { command: process.execPath, args: ['-e', STUB_SERVER_STDERR], env: {}, cwd: '' },
+      5000,
+      60000,
+      undefined,
+      line => { lines.push(line) },
+    )
+    try {
+      await vi.waitFor(() => expect(lines).toContain('boom'))
+    } finally {
+      await host.close()
+    }
+  })
+
+  it('aborts the handshake when the connect signal aborts mid-connect', async () => {
+    const controller = new AbortController()
+    let resolveStarted: (() => void) | undefined
+    const started = new Promise<void>(resolve => { resolveStarted = resolve })
+    const connectPromise = StdioMcpHost.connect(
+      { command: process.execPath, args: ['-e', SLOW_STUB_SERVER], env: {}, cwd: '' },
+      5000,
+      60000,
+      controller.signal,
+      line => { if (line === 'handshake-started') resolveStarted?.() },
+    )
+    // Wait until the server has the initialize request in hand, then cancel it.
+    await started
+    controller.abort()
+    await expect(connectPromise).rejects.toThrow('connect github mcp server')
+  })
+
+  it('rejects immediately when the connect signal is already aborted', async () => {
+    const controller = new AbortController()
+    controller.abort()
+    await expect(StdioMcpHost.connect(
+      { command: process.execPath, args: ['-e', STUB_SERVER], env: {}, cwd: '' },
+      5000,
+      60000,
+      controller.signal,
+    )).rejects.toThrow('connect github mcp server')
+  })
+
+  it('truncates long call error text to the error limit', async () => {
+    const host = await StdioMcpHost.connect(
+      { command: process.execPath, args: ['-e', STUB_SERVER], env: {}, cwd: '' },
+      5000,
+      60000,
+    )
+    try {
+      const outcome = await host.call('explode', {}, signal)
+      expect(outcome.isError).toBe(true)
+      expect(outcome.content).toContain('[tool result truncated]')
+      // Error text is bounded to min(resultLimit, 4000), plus the truncation suffix.
+      expect(outcome.content.length).toBeLessThanOrEqual(4000 + 27)
+    } finally {
+      await host.close()
+    }
   })
 })
