@@ -5,6 +5,14 @@
 # must mount the agent-loop family; swap in whatever spine/LLM/persistence
 # plugins your deployment already uses.
 #
+# 在真实 profile 中，这些行要放进 profile 的 cordis.patch.yml（或 --patch 覆盖层），
+# 且必须包在 `- insert:` 里——patch 顶层的普通行是「按 id 覆盖已有行」的语义，
+# 新插件 id 不存在时会报 `patch: entry "<id>" not found`。
+# In a real profile these rows go into the profile's cordis.patch.yml (or a
+# --patch overlay) WRAPPED IN `- insert:`; a plain top-level row is an
+# id-targeted override, and a new plugin id fails with
+# `patch: entry "<id>" not found`.
+#
 # Mount the plugin ONCE PER ACCOUNT (flat config, multi-instance pattern):
 # every entry below with `name: '@xinlongwu/dsh-github-reviewer'` runs one
 # independent poll loop.

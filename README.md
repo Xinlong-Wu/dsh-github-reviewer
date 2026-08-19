@@ -67,7 +67,16 @@ peer 依赖：插件用到的全部 `@deepseek-ai/*` 包——`@deepseek-ai/cord
 
 ### 在运行中的 DSH 实例上启用
 
-假设实例的 profile 目录为 `$DSH_HOME/profiles/web`（`DSH_HOME` 默认为 `~/.dsh`），且组合已包含 storage 链与 agent 循环（官方 `dsh-base` + `dsh-web-app` bundle 自带）。
+假设实例的 profile 目录为 `$DSH_HOME/profiles/web`（`DSH_HOME` 默认为 `~/.dsh`）。
+
+插件通过 harness 的 **profile 组合**加载：组合树 = 官方 bundle 层（`dsh-base`、`dsh-web-app`，由 profile 的 `package.json` 里 `dsh.profile.bundles` 声明）→ 你的 `cordis.patch.yml` → 启动时的 `--patch` 覆盖层。标准 web profile 已经提供插件需要的全部服务，**无需额外挂载**：
+
+| 插件需要的服务 | 由谁提供 | 位置 |
+|---|---|---|
+| `agents` / `sessions` | `@deepseek-ai/dsh-agent` / `dsh-session` | dsh-base bundle |
+| `agentDefaultModel` | `@deepseek-ai/dsh-agent-default-model`（模型在 `settings.yaml` 配置） | dsh-base bundle |
+| `sessionPersistence` | `@deepseek-ai/dsh-session-persistence-jsonl` | dsh-base bundle |
+| `storageDomain`（游标） | `@deepseek-ai/dsh-storage-domain` + `dsh-storage-json` 后端 | dsh-web-app bundle |
 
 **1. 安装 GitHub MCP server**（官方 Go 版，工具名与守卫匹配）：
 
@@ -83,45 +92,59 @@ github-mcp-server --version
 **2. 把插件装进 profile**：
 
 ```sh
+# 官方方式：dsh CLI 转发给 pnpm（在 profile 目录里安装）
+dsh plugin --profile web add @xinlongwu/dsh-github-reviewer
+
+# 等价手写方式：
 cd "$DSH_HOME/profiles/web"
-# 在 package.json 的 dependencies 中加入：
-#   "@xinlongwu/dsh-github-reviewer": "^0.1.0-rc2"
-# profile 的 pnpm-workspace.yaml 里 autoInstallPeers: false，pnpm 只会安装插件本身
-# 加 @modelcontextprotocol/sdk 与 zod；所有 @deepseek-ai/* peer 都从 harness 安装
-# 目录解析，进程内每个包只有一份，不会出现上面说的副本崩溃。
-npx pnpm install
+npx pnpm add @xinlongwu/dsh-github-reviewer
 ls node_modules/@xinlongwu/dsh-github-reviewer/lib/index.js   # 确认安装成功
 ```
 
-**3. 在 `$DSH_HOME/profiles/web/cordis.patch.yml` 追加插件行**：
+profile 的 `pnpm-workspace.yaml` 里 `autoInstallPeers: false`，pnpm 只会安装插件本身及其真实依赖（`@modelcontextprotocol/sdk`、`zod`）；所有 `@deepseek-ai/*` peer 都从 harness 安装目录解析，进程内每个包只有一份，不会出现副本崩溃（见上文 peer 依赖说明）。
+
+**3. 在 `$DSH_HOME/profiles/web/cordis.patch.yml` 里声明插件**。
+
+注意 patch 文件的语法：顶层数组里的**普通行是按 id 覆盖组合树中已有行**的（目标 id 不存在会报 `patch: entry "<id>" not found`）；**新增插件必须包在 `- insert:` 列表里**：
 
 ```yaml
-- id: github-reviewer
-  name: '@xinlongwu/dsh-github-reviewer'
-  config:
-    name: personal
-    # 二选一：GitHub App 三件套（appId/installationId/privateKeyPath）
-    # 或个人访问令牌：
-    personalAccessToken: 'github_pat_...'
-    repositories:
-      - 'owner/repo'
-    mcp:
-      command: 'github-mcp-server'
-      args: ['stdio', '--tools=pull_request_read,get_file_contents,pull_request_review_write,add_comment_to_pending_review']
-      # 容器方案则为：
-      # command: 'docker'
-      # args: ['run', '-i', '--rm', '-e', 'GITHUB_PERSONAL_ACCESS_TOKEN', '-e', 'GITHUB_HOST',
-      #        'ghcr.io/github/github-mcp-server', 'stdio',
-      #        '--tools=pull_request_read,get_file_contents,pull_request_review_write,add_comment_to_pending_review']
+- insert:
+    - id: github-reviewer
+      name: '@xinlongwu/dsh-github-reviewer'
+      config:
+        name: personal
+        # 二选一：GitHub App 三件套（appId/installationId/privateKeyPath）
+        # 或个人访问令牌。避免在文件里写明文令牌，可用 !!js 表达式从环境变量读取：
+        # personalAccessToken: !!js process.env.GITHUB_PAT
+        personalAccessToken: 'github_pat_...'
+        repositories:
+          - 'owner/repo'
+        mcp:
+          command: 'github-mcp-server'
+          args: ['stdio', '--tools=pull_request_read,get_file_contents,pull_request_review_write,add_comment_to_pending_review']
+          # 容器方案则为（-e 只写变量名，值由插件自动注入进程环境，docker 再透传给容器）：
+          # command: 'docker'
+          # args: ['run', '-i', '--rm', '-e', 'GITHUB_PERSONAL_ACCESS_TOKEN', '-e', 'GITHUB_HOST',
+          #        'ghcr.io/github/github-mcp-server', 'stdio',
+          #        '--tools=pull_request_read,get_file_contents,pull_request_review_write,add_comment_to_pending_review']
 ```
+
+多账户 = 在同一个 `- insert:` 列表里再放一行相同 `name` 的实例（id 不同），各自独立轮询。
 
 **4. 创建 PAT**（PAT 模式）：GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens，仅授权目标仓库，权限：Contents: Read、Pull requests: Read & Write、Issues: Read & Write、Checks: Read（Metadata 自动附带）。
 
-**5. 重启实例并验证**：启动日志应出现 `starting github account=personal repos=1`；开放 PR 会在下一个轮询周期收到 COMMENT 评审，PR 下评论 `/bot <问题>` 可与评审器对话。
+**5. 重启实例并验证**：
+
+```sh
+dsh web
+dsh --profile web --dump-config   # 打印组合后的完整插件树，确认 github-reviewer 行在列
+```
+
+启动日志应出现 `starting github account=personal repos=1`；开放 PR 会在下一个轮询周期收到 COMMENT 评审，PR 下评论 `/bot <问题>` 可与评审器对话。`--dump-config` 若报 `patch: entry "..." not found`，说明该行被当作「覆盖已有行」处理了——检查是否漏了 `- insert:` 包装。
 
 ## 配置
 
-在 harness 的 `cordis.yml` 中挂载插件，**每个账户一个插件实例**（扁平配置、多实例模式）：
+在 profile 的 `cordis.patch.yml` 中以 `- insert:` 挂载插件（见上文「在运行中的 DSH 实例上启用」），**每个账户一个插件实例**（扁平配置、多实例模式）。以下是单个实例的完整配置字段：
 
 ```yaml
 - id: github-reviewer-org
