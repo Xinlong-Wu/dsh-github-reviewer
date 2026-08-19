@@ -63,7 +63,7 @@
 npm install @xinlongwu/dsh-github-reviewer
 ```
 
-peer 依赖：`@deepseek-ai/cordis`（harness 的 Cordis 运行时）。
+peer 依赖：插件用到的全部 `@deepseek-ai/*` 包——`@deepseek-ai/cordis`、`@deepseek-ai/dsh-agent`、`@deepseek-ai/dsh-agent-default-model`、`@deepseek-ai/dsh-llm`、`@deepseek-ai/dsh-session`、`@deepseek-ai/dsh-session-persistence`、`@deepseek-ai/dsh-storage-domain`、`@deepseek-ai/dsh-system-prompt`、`@deepseek-ai/dsh-tools`、`@deepseek-ai/schemastery`。它们声明为 peer 是有意为之：harness 安装目录已经提供这些包，若再往 profile 里装一份副本会让整个进程出问题——工具调度器在共享的 `tools` 服务上按模块私有 Symbol 查找，重复的 `@deepseek-ai/dsh-tools` 实例会让查找返回 `undefined`，导致所有会话第一次调用工具就崩（`Cannot read properties of undefined (reading 'prepare')`）。真正随插件安装的依赖只有 `@modelcontextprotocol/sdk` 和 `zod`。
 
 ### 在运行中的 DSH 实例上启用
 
@@ -86,6 +86,9 @@ github-mcp-server --version
 cd "$DSH_HOME/profiles/web"
 # 在 package.json 的 dependencies 中加入：
 #   "@xinlongwu/dsh-github-reviewer": "^0.1.0-rc2"
+# profile 的 pnpm-workspace.yaml 里 autoInstallPeers: false，pnpm 只会安装插件本身
+# 加 @modelcontextprotocol/sdk 与 zod；所有 @deepseek-ai/* peer 都从 harness 安装
+# 目录解析，进程内每个包只有一份，不会出现上面说的副本崩溃。
 npx pnpm install
 ls node_modules/@xinlongwu/dsh-github-reviewer/lib/index.js   # 确认安装成功
 ```

@@ -63,7 +63,7 @@ The plugin injects the harness `agents`, `sessions`, and `agentDefaultModel` ser
 npm install @xinlongwu/dsh-github-reviewer
 ```
 
-Peer dependency: `@deepseek-ai/cordis` (the harness Cordis runtime).
+Peer dependencies: every `@deepseek-ai/*` package the plugin touches — `@deepseek-ai/cordis`, `@deepseek-ai/dsh-agent`, `@deepseek-ai/dsh-agent-default-model`, `@deepseek-ai/dsh-llm`, `@deepseek-ai/dsh-session`, `@deepseek-ai/dsh-session-persistence`, `@deepseek-ai/dsh-storage-domain`, `@deepseek-ai/dsh-system-prompt`, `@deepseek-ai/dsh-tools`, and `@deepseek-ai/schemastery`. They are declared as peers on purpose: the harness installation already provides them, and installing a second copy into the profile breaks the whole process — the tool scheduler looks up a module-private symbol on the shared `tools` service, and a duplicate `@deepseek-ai/dsh-tools` instance makes that lookup return `undefined`, crashing every session's first tool call with `Cannot read properties of undefined (reading 'prepare')`. Only `@modelcontextprotocol/sdk` and `zod` are installed as real dependencies.
 
 ### Enabling on a running DSH instance
 
@@ -86,6 +86,10 @@ A container works too (`ghcr.io/github/github-mcp-server`); see the commented `m
 cd "$DSH_HOME/profiles/web"
 # Add to dependencies in package.json:
 #   "@xinlongwu/dsh-github-reviewer": "^0.1.0-rc2"
+# The profile's pnpm-workspace.yaml sets autoInstallPeers: false, so pnpm
+# installs only the plugin plus @modelcontextprotocol/sdk and zod — every
+# @deepseek-ai/* peer resolves from the harness installation, keeping a
+# single copy of each package in the process.
 npx pnpm install
 ls node_modules/@xinlongwu/dsh-github-reviewer/lib/index.js   # confirm the install
 ```
