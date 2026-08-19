@@ -1,0 +1,35 @@
+name: npm dist-tag cleanup
+
+# One-off tag hygiene using the NODE_AUTH_TOKEN secret (which cannot be read
+# locally): remove a stale dist-tag. Trigger manually:
+#   gh workflow run cleanup-tag.yml -f tag=next
+# The publish workflow no longer uses `next` (everything goes to `latest`),
+# so the old `next -> 0.1.0-rc2` pointer just lingers until removed.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Dist-tag to remove (default: next)'
+        required: false
+        default: 'next'
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Remove dist-tag
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
+        run: |
+          TAG="${{ inputs.tag }}"
+          npm dist-tag rm @xinlongwu/dsh-github-reviewer "$TAG" \
+            || echo "::notice::dist-tag '$TAG' not present, nothing to remove"
+
+      - name: Show remaining dist-tags
+        run: npm view @xinlongwu/dsh-github-reviewer dist-tags
