@@ -1,0 +1,94 @@
+name: Publish
+
+# Publish the tagged commit to the npm registry.
+# Triggered by any tag matching a version format, e.g. v0.1.0-rc1, v0.1.0.
+# The package.json version must exactly equal the tag without the leading 'v';
+# otherwise the run fails fast and nothing is published.
+#
+# Prerequisite: set the repository secret NODE_AUTH_TOKEN to an npm access
+# token (classic token with write permission, or a granular token scoped to
+# the @xinlong scope with "Publish packages to the registry").
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write # for the post-publish GitHub release
+
+jobs:
+  publish:
+    name: verify · build · publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+          cache: npm
+
+      - name: Validate tag format (vX.Y.Z[-prerelease])
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Tag '$TAG' is not a version tag (expected e.g. v0.1.0-rc1)"
+            exit 1
+          fi
+
+      - name: Verify package.json version matches tag
+        run: |
+          EXPECTED="${GITHUB_REF_NAME#v}"
+          ACTUAL="$(node -p "require('./package.json').version")"
+          if [ "$EXPECTED" != "$ACTUAL" ]; then
+            echo "::error::package.json version is '$ACTUAL' but tag is '$GITHUB_REF_NAME'. Bump package.json to '$EXPECTED' before tagging."
+            exit 1
+          fi
+          echo "PKG_VERSION=$EXPECTED" >> "$GITHUB_ENV"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Tests
+        run: npm test
+
+      - name: Coverage (threshold 80%)
+        run: npm run coverage
+
+      - name: Build
+        run: npm run build
+
+      - name: Package hygiene (publint)
+        run: npm run publint
+
+      - name: Dry-run publish (inspect tarball)
+        run: npm publish --dry-run
+
+      - name: Publish to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
+        run: |
+          if [[ "$PKG_VERSION" == *-* ]]; then
+            # prerelease (e.g. 0.1.0-rc1): dist-tag "next", never "latest"
+            npm publish --tag next
+          else
+            npm publish
+          fi
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+          || echo "::notice::Release $GITHUB_REF_NAME already exists, skipping"
