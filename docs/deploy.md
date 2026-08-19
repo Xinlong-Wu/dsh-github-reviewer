@@ -124,4 +124,4 @@ dsh --profile web --dump-config   # 打印组合后的完整插件树，确认 g
 
 启动日志应出现 `starting github account=personal repos=1`；开放 PR 会在下一个轮询周期收到 COMMENT 评审，PR 下评论 `/bot <问题>` 可与评审器对话。`--dump-config` 若报 `patch: entry "..." not found`，说明该行被当作「覆盖已有行」处理了——检查是否漏了 `- insert:` 包装。
 
-启用后，评审/对话会话会归入自动注册的 `GithubReviewer` 工作区（需要 `workspace` 服务，web profile 自带）；可用 `workspaceDir` / `workspaceTitle` 调整。已存在的旧会话仍留在原工作区，只有新会话使用新目录。
+启用后，评审/对话会话会归入自动注册的 `GithubReviewer` 工作区。目录与注册的时机：插件激活时**先检查组合**是否包含 `workspace` 服务（通过 loader 判断"将被挂载"）——包含则立即创建目录并重试注册（服务激活可能慢，会一直重试到成功）；**每个 PR 会话创建前还会复查一次**，保证目录存在、服务可用时记录已注册。组合里没有该服务时不做任何目录/注册工作。可用 `workspaceDir` / `workspaceTitle` 调整。已存在的旧会话仍留在原工作区，只有新会话使用新目录。
