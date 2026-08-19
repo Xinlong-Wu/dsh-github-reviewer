@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { generateKeyPairSync } from 'node:crypto'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { access, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { Context } from '@deepseek-ai/cordis'
@@ -32,6 +32,7 @@ function validConfig(keyPath: string, overrides: Record<string, unknown> = {}): 
     webUrl: 'https://github.com',
     pollIntervalMs: 120000,
     repositories: ['owner/repo'],
+    workspaceDir: join(dir, 'ws'), // under the temp dir, never the real $DSH_HOME
     mcp: { command: 'github-mcp-server', args: ['stdio'], env: {}, cwd: '' },
     ...overrides,
   }
@@ -176,6 +177,24 @@ describe('plugin wiring through a real Cordis context', () => {
     ctx.provide('workspace', { create })
     const fiber = await ctx.plugin(plugin, validConfig(keyPath, { workspaceDir: join(dir, 'ws') }))
     await vi.waitFor(() => expect(create).toHaveBeenCalled())
+    expect(create).toHaveBeenCalledWith(join(dir, 'ws'), 'GithubReviewer')
+    await fiber.dispose()
+    expect(fiber.state).toBe(4)
+  })
+
+  it('creates the workspace dir at activation and registers once the service appears late', async () => {
+    const keyPath = await tempKeyPath()
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', { status: 200 })))
+    const ctx = new Context()
+    provideCoreServices(ctx)
+    const fiber = await ctx.plugin(plugin, validConfig(keyPath, { workspaceDir: join(dir, 'ws') }))
+    await vi.waitFor(() => expect(fiber.state).toBe(2)) // FiberState.ACTIVE
+    // The directory is created unconditionally at activation, not at review time.
+    await vi.waitFor(async () => { await access(join(dir, 'ws')) })
+    // The workspace service arrives late (activation race): the retry registers it.
+    const create = vi.fn(async () => ({}))
+    setTimeout(() => ctx.provide('workspace', { create }), 100)
+    await vi.waitFor(() => expect(create).toHaveBeenCalled(), { timeout: 5000 })
     expect(create).toHaveBeenCalledWith(join(dir, 'ws'), 'GithubReviewer')
     await fiber.dispose()
     expect(fiber.state).toBe(4)
