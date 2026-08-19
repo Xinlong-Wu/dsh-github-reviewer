@@ -271,6 +271,8 @@ On first contact with a PR, the runner asks the agent registry for an Agent whos
 - If the PR session already exists in `sessionPersistence`, it is **resumed** with the same setup world (world = the system-prompt sections and scoped tools registered on an agent's scope context at creation).
 - Otherwise a fresh agent and session are created; the session id is stable, so a later restart resumes the same PR conversation.
 
+When the `session-title` service is mounted (bundled with the web profile), each session title is pinned to `Review <owner>/<repo> PR <number>` (e.g. `Review Xinlong-Wu/dsh-github-reviewer PR 18`); automatic title generation never overrides it.
+
 The agent setup registers the review world on the unpublished agent context: a `complete` system-prompt section (the review or chat prompt, selected per turn), the four guarded GitHub tools as scoped tool definitions, and a tool restriction that hides **every global tool** from this agent — the model sees only the closed review tool set, mirroring LingoBridge's guarded-only handler. The session log is the durable per-PR history — later turns replay it through the loop, and checkpoints/compaction apply exactly as for interactive sessions.
 
 ### Review flow

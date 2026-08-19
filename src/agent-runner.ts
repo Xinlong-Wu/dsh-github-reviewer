@@ -23,6 +23,7 @@ import type { TurnSlot } from './github/guard.ts'
 import { StdioMcpHost } from './github/mcp-host.ts'
 import type { McpHost, RawMcpTool } from './github/mcp-host.ts'
 import type { PullRequest, ReviewInstructions } from './github/model.ts'
+import { fullName } from './github/model.ts'
 import { buildChatSystemPrompt, buildReviewSystemPrompt, buildReviewUserPrompt } from './github/prompts.ts'
 import type { PollLogger } from './logger.ts'
 
@@ -39,6 +40,15 @@ export interface AgentRunnerDeps {
    * When present it wins over `agentDefaultModel.currentSelection()`.
    */
   modelOverride?: { provider: string; model: string }
+  /**
+   * Optional harness session-title service; when mounted, every PR session is
+   * renamed to a uniform `Review <owner>/<repo> PR <number>` title (pinned, so
+   * automatic generation never overrides it).
+   */
+  sessionTitle?: {
+    get(session: { id: string; events: readonly unknown[] }): { title?: string } | undefined
+    rename(session: { id: string; events: readonly unknown[] }, title: string): unknown
+  }
   /** Durable session storage; absent in compositions without a persistence provider. */
   sessionPersistence?: SessionPersistence
   tokenSource: TokenSource
@@ -146,6 +156,7 @@ export class AgentRunner {
     try {
       const handle = await this.ensureAgent(pr, signal)
       agent = handle.agent
+      this.renameSession(agent.session, pr)
       const token = await this.deps.tokenSource.token(signal)
       host = await this.connectHost(token, signal)
       firstSeq = agent.session.seq
@@ -165,6 +176,23 @@ export class AgentRunner {
     await this.deps.sessions.flush(agent.session)
     const text = summarizeInterval(agent.session.events, firstSeq)
     return { submitted: state.submittedComment, text }
+  }
+
+  /**
+   * Pin a uniform session title for one PR, once. The title is user-sourced
+   * through the session-title service, so automatic generation never replaces
+   * it; already-titled sessions (e.g. resumed from persistence) are skipped.
+   */
+  private renameSession(session: { id: string; events: readonly unknown[] }, pr: PullRequest): void {
+    const service = this.deps.sessionTitle
+    if (service === undefined) return
+    const title = `Review ${fullName(pr.base.repo)} PR ${pr.number}`
+    try {
+      if (service.get(session)?.title === title) return
+      service.rename(session, title)
+    } catch (error) {
+      this.deps.logger.warn(`github review session title rename failed: ${String(error)}`)
+    }
   }
 
   /** Return the live handle for a PR, creating or resuming its agent once. */
