@@ -16,6 +16,7 @@ on:
 
 permissions:
   contents: write # for the post-publish GitHub release
+  id-token: write # for npm publish --provenance (OIDC)
 
 jobs:
   publish:
@@ -58,10 +59,7 @@ jobs:
       - name: Lint
         run: npm run lint
 
-      - name: Tests
-        run: npm test
-
-      - name: Coverage (threshold 80%)
+      - name: Tests with coverage (threshold 80%)
         run: npm run coverage
 
       - name: Build
@@ -71,7 +69,7 @@ jobs:
         run: npm run publint
 
       - name: Dry-run publish (inspect tarball)
-        run: npm publish --dry-run
+        run: npm publish --dry-run --provenance
 
       - name: Publish to npm
         env:
@@ -79,9 +77,9 @@ jobs:
         run: |
           if [[ "$PKG_VERSION" == *-* ]]; then
             # prerelease (e.g. 0.1.0-rc1): dist-tag "next", never "latest"
-            npm publish --tag next
+            npm publish --provenance --tag next
           else
-            npm publish
+            npm publish --provenance
           fi
 
       - name: Create GitHub release
