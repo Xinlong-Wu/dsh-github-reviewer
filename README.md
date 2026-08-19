@@ -204,6 +204,19 @@ dsh --profile web --dump-config   # 打印组合后的完整插件树，确认 g
 | `mcp.env` | `{}` | 额外的 MCP server 环境变量；GitHub 令牌自动注入 |
 | `mcp.cwd` | — | server 的可选工作目录 |
 
+### MCP server 环境变量自动注入
+
+插件在启动**每个回合**的 MCP server 时自动注入两个环境变量——**不需要、也不应该**在 `mcp.args` 或 `mcp.env` 里自己传：
+
+| 变量 | 值 | 说明 |
+|---|---|---|
+| `GITHUB_PERSONAL_ACCESS_TOKEN` | 当前回合生效的令牌：PAT 模式为 `personalAccessToken`；App 模式为每回合现铸造的安装令牌 | 在 `mcp.env` 合并之后写入，覆盖同名条目 |
+| `GITHUB_HOST` | `webUrl`（默认 `https://github.com`） | 同上 |
+
+- **二进制方式**：server 进程直接拿到这两个变量，无需任何配置。
+- **容器方式（docker）**：用 `-e GITHUB_PERSONAL_ACCESS_TOKEN`、`-e GITHUB_HOST`（**只写变量名**），让 docker 从进程环境继承——不要用 `-e NAME=值` 硬编码：token 会进入 docker 命令行（`ps` / `docker inspect` 可见），而且 App 模式的安装令牌是运行时铸造的，配置加载时根本不存在。
+- 想改 `GITHUB_HOST` 默认值，配置 `webUrl` 即可，不必在 args 里传。
+
 ### 在配置文件里写 JS 表达式（`!!js`）
 
 patch 文件（`cordis.patch.yml`、`--patch` 覆盖层、bundle）里的配置值支持 YAML `!!js` 标签，在**启动加载时**同步求值，可用于任意字段（包括 `disabled`）：

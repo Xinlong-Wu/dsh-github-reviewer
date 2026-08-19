@@ -207,6 +207,19 @@ Multiple accounts = another plugin instance with the same `name`, each running i
 | `mcp.env` | `{}` | Extra MCP server environment variables; GitHub tokens are injected automatically |
 | `mcp.cwd` | — | Optional working directory for the server |
 
+### Automatic MCP server environment injection
+
+The plugin injects two environment variables into **every per-turn** MCP server it spawns — **there is no need (and no reason) to pass them yourself** in `mcp.args` or `mcp.env`:
+
+| Variable | Value | Notes |
+|---|---|---|
+| `GITHUB_PERSONAL_ACCESS_TOKEN` | The effective token for this turn: your `personalAccessToken` in PAT mode; a freshly minted installation token per turn in App mode | Written after the `mcp.env` merge, so it overrides same-named entries |
+| `GITHUB_HOST` | `webUrl` (default `https://github.com`) | Same |
+
+- **Binary servers** receive both variables directly — no configuration needed.
+- **Container (docker)**: use `-e GITHUB_PERSONAL_ACCESS_TOKEN` / `-e GITHUB_HOST` (**name only**) so docker inherits them from the process environment — do not hardcode `-e NAME=value`: the token would land in the docker argv (visible in `ps` / `docker inspect`), and App-mode installation tokens are minted at runtime, so they do not exist at config load.
+- To change the `GITHUB_HOST` default, set `webUrl` instead of passing it in the args.
+
 ### JS expressions in the config file (`!!js`)
 
 Config values in patch files (`cordis.patch.yml`, `--patch` overlays, bundles) support the YAML `!!js` tag, evaluated synchronously at boot — usable in any field, including `disabled`:
