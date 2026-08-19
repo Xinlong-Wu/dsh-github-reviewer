@@ -35,6 +35,7 @@
 ```
 
 - **模型不由插件配置**：每个评审 agent 使用部署的默认模型选择（`agentDefaultModel`，由 agent-spine 家族提供，例如在 `agent-spine-demo` 的 `agents` 条目中配置）。
+- **游标需要存储域**：`dsh_github_reviewer` 域由 `@deepseek-ai/dsh-storage-domain` 提供，需要挂一个后端（`@deepseek-ai/dsh-storage-json` 或 `@deepseek-ai/dsh-storage-sqlite`）并在 storage-domain 配置里路由（例如 `backend: json` 或 `backend: sqlite`）。未挂载时插件在加载期报错。
 - **没有 `sessionPersistence`**：评审器仍可用，但 PR 会话只在内存中——重启后每个 PR 从全新会话开始。
 - **有 `sessionPersistence`**：每个回合都会被检查点化，重启后评审器恢复已持久化的 PR 会话（同一个 PR 不会创建第二个会话）。
 - PR 会话与交互式会话共用同一个会话存储，因此评审在 harness 会话界面里可见、可回放。
@@ -55,7 +56,7 @@ peer 依赖：`@deepseek-ai/cordis`（harness 的 Cordis 运行时）。
 - id: github-reviewer-org
   name: '@lingobridge/dsh-github-reviewer'
   config:
-    name: org                             # 账户标签：日志与默认 statePath
+    name: org                             # 账户标签：日志与游标记录键
     appId: '123456'
     installationId: '987654'
     privateKeyPath: '/etc/dsh/github-app.pem'
@@ -79,7 +80,6 @@ peer 依赖：`@deepseek-ai/cordis`（harness 的 Cordis 运行时）。
         - '--tools=pull_request_read,get_file_contents,pull_request_review_write,add_comment_to_pending_review'
       env: {}                              # 可选；GitHub 令牌自动注入
       cwd: ''                              # 可选
-    statePath: ''                          # 可选；默认 ./.dsh-github-reviewer/<name>.json
 ```
 
 多账户 = 再挂一行相同 `name` 的插件实例，各自独立轮询。
@@ -105,7 +105,6 @@ peer 依赖：`@deepseek-ai/cordis`（harness 的 Cordis 运行时）。
 | `mcp.args` | — | server 参数；请显式包含 `--tools=...`（必填） |
 | `mcp.env` | `{}` | 额外的 MCP server 环境变量；GitHub 令牌自动注入 |
 | `mcp.cwd` | — | server 的可选工作目录 |
-| `statePath` | `./.dsh-github-reviewer/<name>.json` | 游标状态文件路径 |
 
 
 配置错误会在加载时响亮失败：缺少凭证、无效的仓库名、无法读取的私钥、缺少 MCP command/args 都会在激活时报错，而不是静默跳过评审。
@@ -119,7 +118,7 @@ peer 依赖：`@deepseek-ai/cordis`（harness 的 Cordis 运行时）。
 - 新 PR 或 `head.sha` 变化 → 执行评审。
 - 已评审或 `missing_instructions` 且 SHA 未变化 → 轮询评论中的 `/review` 与 `/bot` 命令。
 
-游标状态是每账户一个 JSON 文件（`prs` 以 `owner/repo#number` 为键，记录 head SHA、终态状态、评论检查时间戳），通过临时文件改名原子写入。
+游标状态存放在 harness 的存储域中（`dsh_github_reviewer` 域、`accounts` 表、每账户一条记录），由部署路由到的后端持久化——挂 `dsh-storage-json` 时是 JSON 文件，挂 `dsh-storage-sqlite` 时就是真正的 SQLite 数据库。
 
 ### 每 PR 的 Agent 与会话
 

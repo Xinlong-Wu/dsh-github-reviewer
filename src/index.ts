@@ -16,13 +16,14 @@ import type {} from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-agent-default-model'
 import type {} from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-session-persistence'
+import type {} from '@deepseek-ai/dsh-storage-domain'
 import { AgentRunner } from './agent-runner.ts'
 import { AppTokenSource } from './github/auth.ts'
 import { GitHubClient } from './github/client.ts'
 import { Config, normalizeAccountConfig, validateAccountRuntime } from './config.ts'
 import type { Config as PluginConfig } from './config.ts'
+import { cursorDomainSpec, StorageDomainCursorStore } from './cursor-store.ts'
 import { AccountPoller, cordisLogger } from './poller.ts'
-import { JsonFileCursorStore } from './state-file.ts'
 
 export { Config }
 export type { Config as GithubReviewerConfig, McpConfig, ResolvedAccountConfig, ReviewConfig } from './config.ts'
@@ -50,6 +51,14 @@ export const inject = ['agents', 'sessions', 'agentDefaultModel']
  */
 export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
   const sessionPersistence = ctx.get('sessionPersistence')
+  const storageDomain = ctx.get('storageDomain')
+  if (storageDomain === undefined) {
+    throw new Error(
+      'github-reviewer requires the storage-domain form: mount @deepseek-ai/dsh-storage-domain '
+      + 'with a backend such as @deepseek-ai/dsh-storage-json or @deepseek-ai/dsh-storage-sqlite '
+      + '(the review cursor lives in a storage-domain record per account)',
+    )
+  }
   const account = normalizeAccountConfig(config)
   validateAccountRuntime(account.name, account)
 
@@ -60,9 +69,8 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
     account.baseUrl,
   )
   const client = new GitHubClient(account.baseUrl, tokenSource)
-  const store = new JsonFileCursorStore(
-    account.statePath === '' ? JsonFileCursorStore.defaultPath(account.name) : account.statePath,
-  )
+  const domain = await storageDomain.open(cursorDomainSpec)
+  const store = new StorageDomainCursorStore(domain.table('accounts'), account.name)
   await store.load()
 
   const logger = cordisLogger(ctx.logger)
@@ -88,6 +96,9 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
     })
     poller.start()
     logger.info(`starting github account=${account.name} repos=${account.repositories.length} poll_interval_ms=${account.pollIntervalMs}`)
-    return () => poller.dispose()
+    return async () => {
+      await poller.dispose()
+      await domain.close()
+    }
   }, `github-reviewer.${account.name}`)
 }

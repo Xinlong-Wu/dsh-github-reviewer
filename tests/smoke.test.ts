@@ -33,7 +33,6 @@ function validConfig(keyPath: string, overrides: Record<string, unknown> = {}): 
     pollIntervalMs: 120000,
     repositories: ['owner/repo'],
     mcp: { command: 'github-mcp-server', args: ['stdio'], env: {}, cwd: '' },
-    statePath: join(dir, 'cursor.json'),
     ...overrides,
   }
 }
@@ -49,6 +48,21 @@ function provideCoreServices(ctx: Context): void {
   })
   ctx.provide('agentDefaultModel', {
     currentSelection: () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
+  })
+  const records = new Map<string, unknown>()
+  ctx.provide('storageDomain', {
+    open: async () => ({
+      table: () => ({
+        get: (key: string) => records.get(key),
+        put: async (key: string, value: unknown) => { records.set(key, value) },
+        delete: async () => true,
+        update: async () => undefined,
+        entries: () => records.entries(),
+        keys: () => records.keys(),
+        size: records.size,
+      }),
+      close: async () => {},
+    }),
   })
 }
 
@@ -108,5 +122,14 @@ describe('plugin wiring through a real Cordis context', () => {
     const ctx = new Context()
     provideCoreServices(ctx)
     await expect(ctx.plugin(plugin, {} as Config)).rejects.toThrow('appId is required')
+  })
+
+  it('fails activation loudly when the storage-domain form is not mounted', async () => {
+    const keyPath = await tempKeyPath()
+    const ctx = new Context()
+    ctx.provide('agents', { create: vi.fn(), resume: vi.fn() })
+    ctx.provide('sessions', { flush: vi.fn(async () => true) })
+    ctx.provide('agentDefaultModel', { currentSelection: () => ({ provider: 'deepseek', model: 'deepseek-chat' }) })
+    await expect(ctx.plugin(plugin, validConfig(keyPath))).rejects.toThrow('storage-domain')
   })
 })

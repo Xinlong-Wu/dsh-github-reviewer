@@ -54,8 +54,6 @@ export interface Config {
   review?: ReviewConfig
   /** Optional; the command and args are required for review operation. */
   mcp?: McpConfig
-  /** Optional cursor state file; defaults to `./.dsh-github-reviewer/<name>.json`. */
-  statePath: string
 }
 
 /** One GitHub App review account with every default resolved. */
@@ -70,7 +68,6 @@ export interface ResolvedAccountConfig {
   repositories: string[]
   review: ReviewConfig
   mcp: McpConfig
-  statePath: string
 }
 
 const Review = z.object({
@@ -100,7 +97,6 @@ export const Config = z.object({
   repositories: z.array(z.string()).default([]),
   review: Review,
   mcp: Mcp,
-  statePath: z.string().default(''),
 }) as unknown as z<Config>
 
 /**
@@ -149,7 +145,6 @@ export function normalizeAccountConfig(account: Config): ResolvedAccountConfig {
       env,
       cwd: (account.mcp?.cwd ?? '').trim(),
     },
-    statePath: account.statePath.trim(),
   }
 }
 
