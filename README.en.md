@@ -274,8 +274,8 @@ The agent setup registers the review world on the unpublished agent context: a `
 ### Review flow
 
 1. Read trusted instructions from the base repository (base branch, then base SHA) or the configured default.
-2. Spawn the per-turn GitHub MCP server with a fresh installation token and `GITHUB_HOST` injected.
-3. Arm the turn slot (turn slot = the per-turn mutable context: current PR, flow, instructions, live MCP host, guard state) and wake the PR agent with the review user prompt via `agent.followup`.
+2. Spawn the per-turn GitHub MCP server with a fresh installation token and `GITHUB_HOST` injected. Tool schemas are discovered once per process and cached (they depend on neither the PR nor the token), so a burst of new PRs does not reconnect repeatedly.
+3. Arm the turn slot (turn slot = the per-turn mutable context: current PR, flow, instructions, live MCP host, guard state) and wake the PR agent with the review user prompt via `agent.followup`. The user prompt carries structured PR metadata (repository/number/title/URL/base/head) plus the diff size (`size: N files (+X/-Y)`, from the list payload — the model picks `get_diff` vs paginated `get_files` accordingly); the body is truncated at 8k characters and marked `[truncated, use pull_request_read method=get]` — the model reads the full body itself when needed.
 4. Await `agent.whenIdle()`: the loop drives model steps and tool calls; the guarded tools enforce the review rules on every call.
 5. Flush the session to persistence and mark the PR `reviewed` only when the guarded `submit_pending` call with `event=COMMENT` succeeded.
 

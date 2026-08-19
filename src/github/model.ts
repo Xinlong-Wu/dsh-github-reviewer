@@ -30,6 +30,12 @@ export interface PullRequest {
   draft: boolean
   head: PullRequestRef
   base: PullRequestRef
+  /** Number of files changed by the PR head (from the list payload). */
+  changedFiles: number
+  /** Total added lines across the changed files. */
+  additions: number
+  /** Total deleted lines across the changed files. */
+  deletions: number
 }
 
 /** Trusted review instructions and where they came from. */

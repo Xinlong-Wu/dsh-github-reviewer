@@ -202,6 +202,26 @@ describe('AgentRunner agent lifecycle', () => {
     expect(world.fakeHandle.handle.dispose).toHaveBeenCalledTimes(1)
   })
 
+  it('discovers the guarded tool schemas once and reuses them across PRs', async () => {
+    const world = makeWorld()
+    const { runner, hosts } = makeRunner(world)
+    const signal = new AbortController().signal
+    const pr2 = { ...pr, number: 43 }
+
+    const review1 = runner.driveReview(pr, { text: 'trusted', source: 'x' }, signal)
+    world.fakeHandle.resolveTurn()
+    await review1
+    const review2 = runner.driveReview(pr2, { text: 'trusted', source: 'x' }, signal)
+    world.fakeHandle.resolveTurn()
+    await review2
+
+    expect(world.create).toHaveBeenCalledTimes(2)
+    // 1 schema-discovery host + 1 per-turn host per review; without the
+    // schema cache there would be a second discovery host (4 total).
+    expect(hosts).toHaveLength(3)
+    await runner.dispose()
+  })
+
   it('resumes a persisted PR session instead of creating a fresh one', async () => {
     const world = makeWorld()
     const sessionId = 'github:reviewer:owner:repo:pr:42'

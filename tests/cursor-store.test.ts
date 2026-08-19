@@ -17,6 +17,9 @@ const pr: PullRequest = {
   body: '',
   htmlUrl: 'u',
   draft: false,
+  changedFiles: 3,
+  additions: 10,
+  deletions: 2,
   head: { sha: 'head-sha', ref: 'feature', repo: { owner: 'forker', name: 'repo' } },
   base: { sha: 'base-sha', ref: 'main', repo: { owner: 'owner', name: 'repo' } },
 }
