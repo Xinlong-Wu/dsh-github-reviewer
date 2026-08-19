@@ -104,11 +104,12 @@ ls node_modules/@xinlongwu/dsh-github-reviewer/lib/index.js   # 确认安装成�
       - 'owner/repo'
     mcp:
       command: 'github-mcp-server'
-      args: ['stdio', '--tools=pull_requests,repos,issues']
+      args: ['stdio', '--tools=pull_request_read,get_file_contents,pull_request_review_write,add_comment_to_pending_review']
       # 容器方案则为：
       # command: 'docker'
       # args: ['run', '-i', '--rm', '-e', 'GITHUB_PERSONAL_ACCESS_TOKEN', '-e', 'GITHUB_HOST',
-      #        'ghcr.io/github/github-mcp-server', 'stdio', '--tools=pull_requests,repos,issues']
+      #        'ghcr.io/github/github-mcp-server', 'stdio',
+      #        '--tools=pull_request_read,get_file_contents,pull_request_review_write,add_comment_to_pending_review']
 ```
 
 **4. 创建 PAT**（PAT 模式）：GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens，仅授权目标仓库，权限：Contents: Read、Pull requests: Read & Write、Issues: Read & Write、Checks: Read（Metadata 自动附带）。
