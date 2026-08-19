@@ -7,7 +7,7 @@ import {
   normalizeAccountConfig,
   validateAccountRuntime,
 } from '../src/config.ts'
-import type { AccountConfig } from '../src/config.ts'
+import type { Config as AccountConfig } from '../src/config.ts'
 
 const base: AccountConfig = {
   appId: ' 123 ',

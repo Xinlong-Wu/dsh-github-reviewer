@@ -1,8 +1,8 @@
 /**
- * Plugin configuration: one GitHub App review account per entry under
- * `accounts`. Ported from LingoBridge's `platforms.github` config. The model
- * route is not configured here — the deployment's default model selection
- * (`ctx.agentDefaultModel`) drives every review agent.
+ * Plugin configuration: one GitHub App review account per plugin instance.
+ * Mount the plugin once per account in the harness composition (the
+ * multi-instance pattern, like `mcp-client`); the deployment's default model
+ * selection drives every review agent, so no model fields live here.
  * @module
  */
 
@@ -18,6 +18,8 @@ export const DEFAULT_TOOL_TIMEOUT_MS = 30_000
 export const DEFAULT_TOOL_RESULT_LIMIT = 60_000
 /** Overall deadline for one review conversation. */
 export const DEFAULT_REVIEW_TIMEOUT_MS = 15 * 60_000
+/** Default account label when the instance config omits `name`. */
+export const DEFAULT_ACCOUNT_NAME = 'default'
 
 /** Per-account review limits, fully resolved after normalization. */
 export interface ReviewConfig {
@@ -37,8 +39,10 @@ export interface McpConfig {
   cwd: string
 }
 
-/** One GitHub App review account as loaded from cordis.yml. */
-export interface AccountConfig {
+/** One GitHub App review account as loaded from cordis.yml, flat per instance. */
+export interface Config {
+  /** Account label used in logs and the default state file; defaults to `default`. */
+  name?: string
   appId: string
   installationId: string
   privateKeyPath: string
@@ -50,12 +54,13 @@ export interface AccountConfig {
   review?: ReviewConfig
   /** Optional; the command and args are required for review operation. */
   mcp?: McpConfig
-  /** Optional cursor state file; defaults to `./.dsh-github-reviewer/<account>.json`. */
+  /** Optional cursor state file; defaults to `./.dsh-github-reviewer/<name>.json`. */
   statePath: string
 }
 
 /** One GitHub App review account with every default resolved. */
 export interface ResolvedAccountConfig {
+  name: string
   appId: string
   installationId: string
   privateKeyPath: string
@@ -66,11 +71,6 @@ export interface ResolvedAccountConfig {
   review: ReviewConfig
   mcp: McpConfig
   statePath: string
-}
-
-/** Whole plugin configuration. */
-export interface Config {
-  accounts: Record<string, AccountConfig>
 }
 
 const Review = z.object({
@@ -88,7 +88,9 @@ const Mcp = z.object({
   cwd: z.string().default(''),
 })
 
-const Account = z.object({
+/** Schemastery schema for one plugin instance (one account). */
+export const Config = z.object({
+  name: z.string().default(DEFAULT_ACCOUNT_NAME),
   appId: z.string().default(''),
   installationId: z.string().default(''),
   privateKeyPath: z.string().default(''),
@@ -99,20 +101,17 @@ const Account = z.object({
   review: Review,
   mcp: Mcp,
   statePath: z.string().default(''),
-})
-
-/** Schemastery schema for cordis.yml loading. */
-export const Config = z.object({
-  accounts: z.dict(Account).default({}),
 }) as unknown as z<Config>
 
 /**
- * Normalize one account config: trim strings, dedupe repositories, and
- * materialize review/MCP defaults the schema leaves optional.
+ * Normalize one account config: trim strings, resolve the account name,
+ * dedupe repositories, and materialize review/MCP defaults the schema leaves
+ * optional.
  * @param account - raw account config.
  * @returns normalized account config with every default resolved.
  */
-export function normalizeAccountConfig(account: AccountConfig): ResolvedAccountConfig {
+export function normalizeAccountConfig(account: Config): ResolvedAccountConfig {
+  const name = (account.name ?? DEFAULT_ACCOUNT_NAME).trim() || DEFAULT_ACCOUNT_NAME
   const repositories: string[] = []
   const seen = new Set<string>()
   for (const raw of account.repositories) {
@@ -129,6 +128,7 @@ export function normalizeAccountConfig(account: AccountConfig): ResolvedAccountC
   }
   const args = (account.mcp?.args ?? []).map(value => value.trim()).filter(value => value !== '')
   return {
+    name,
     appId: account.appId.trim(),
     installationId: account.installationId.trim(),
     privateKeyPath: account.privateKeyPath.trim(),
@@ -160,17 +160,17 @@ export function normalizeAccountConfig(account: AccountConfig): ResolvedAccountC
  * @param account - normalized account config.
  */
 export function validateAccountRuntime(name: string, account: ResolvedAccountConfig): void {
-  if (account.appId === '') throw new Error(`github-reviewer.accounts.${name}.appId is required`)
-  if (account.installationId === '') throw new Error(`github-reviewer.accounts.${name}.installationId is required`)
-  if (account.privateKeyPath === '') throw new Error(`github-reviewer.accounts.${name}.privateKeyPath is required`)
+  if (account.appId === '') throw new Error(`github-reviewer.${name}.appId is required`)
+  if (account.installationId === '') throw new Error(`github-reviewer.${name}.installationId is required`)
+  if (account.privateKeyPath === '') throw new Error(`github-reviewer.${name}.privateKeyPath is required`)
   if (account.repositories.length === 0) {
-    throw new Error(`github-reviewer.accounts.${name}.repositories must include at least one owner/repo`)
+    throw new Error(`github-reviewer.${name}.repositories must include at least one owner/repo`)
   }
   for (const repo of account.repositories) {
     if (parseRepository(repo) === undefined) {
-      throw new Error(`github-reviewer.accounts.${name}.repositories entry "${repo}" must be owner/repo`)
+      throw new Error(`github-reviewer.${name}.repositories entry "${repo}" must be owner/repo`)
     }
   }
-  if (account.mcp.command === '') throw new Error(`github-reviewer.accounts.${name}.mcp.command is required`)
-  if (account.mcp.args.length === 0) throw new Error(`github-reviewer.accounts.${name}.mcp.args is required`)
+  if (account.mcp.command === '') throw new Error(`github-reviewer.${name}.mcp.command is required`)
+  if (account.mcp.args.length === 0) throw new Error(`github-reviewer.${name}.mcp.args is required`)
 }

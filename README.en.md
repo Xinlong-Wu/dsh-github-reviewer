@@ -49,63 +49,64 @@ Peer dependency: `@deepseek-ai/cordis` (the harness Cordis runtime).
 
 ## Configuration
 
-Mount the plugin in the harness `cordis.yml`:
+Mount the plugin in the harness `cordis.yml`, **one plugin instance per account** (flat config, multi-instance pattern):
 
 ```yaml
-plugins:
-  github-reviewer:
-    config:
-      accounts:
-        reviewer:
-          appId: '123456'
-          installationId: '987654'
-          privateKeyPath: '/etc/dsh/github-app.pem'
-          baseUrl: 'https://api.github.com'      # optional
-          webUrl: 'https://github.com'           # optional
-          pollIntervalMs: 120000                 # optional, default 2m
-          repositories:
-            - 'owner/repo'
-          review:                                # all optional
-            maxToolCalls: 30
-            toolTimeoutMs: 30000
-            toolResultLimit: 60000
-            timeoutMs: 900000
-            defaultInstructions: |
-              Review this pull request for correctness, regressions, security issues,
-              and missing tests. Leave concise inline comments where useful.
-          mcp:
-            command: 'github-mcp-server'
-            args:
-              - 'stdio'
-              - '--tools=pull_request_read,get_file_contents,pull_request_review_write,add_comment_to_pending_review'
-            env: {}                              # optional; GitHub tokens are injected automatically
-            cwd: ''                              # optional
-          statePath: ''                          # optional; defaults to ./.dsh-github-reviewer/<account>.json
+- id: github-reviewer-org
+  name: '@lingobridge/dsh-github-reviewer'
+  config:
+    name: org                             # account label: logs + default statePath
+    appId: '123456'
+    installationId: '987654'
+    privateKeyPath: '/etc/dsh/github-app.pem'
+    baseUrl: 'https://api.github.com'      # optional
+    webUrl: 'https://github.com'           # optional
+    pollIntervalMs: 120000                 # optional, default 2m
+    repositories:
+      - 'owner/repo'
+    review:                                # all optional
+      maxToolCalls: 30
+      toolTimeoutMs: 30000
+      toolResultLimit: 60000
+      timeoutMs: 900000
+      defaultInstructions: |
+        Review this pull request for correctness, regressions, security issues,
+        and missing tests. Leave concise inline comments where useful.
+    mcp:
+      command: 'github-mcp-server'
+      args:
+        - 'stdio'
+        - '--tools=pull_request_read,get_file_contents,pull_request_review_write,add_comment_to_pending_review'
+      env: {}                              # optional; GitHub tokens are injected automatically
+      cwd: ''                              # optional
+    statePath: ''                          # optional; defaults to ./.dsh-github-reviewer/<name>.json
 ```
 
-Multiple accounts run independent poll loops.
+Multiple accounts = another plugin instance with the same `name`, each running its own poll loop.
 
 ### Config reference
 
 | Field | Default | Description |
 |---|---|---|
-| `accounts.<name>.appId` | — | GitHub App ID (required) |
-| `accounts.<name>.installationId` | — | GitHub App installation ID used to mint installation tokens (required) |
-| `accounts.<name>.privateKeyPath` | — | Local PEM private key path for signing GitHub App JWTs (required) |
-| `accounts.<name>.baseUrl` | `https://api.github.com` | GitHub REST API base URL |
-| `accounts.<name>.webUrl` | `https://github.com` | GitHub web URL and MCP `GITHUB_HOST` value |
-| `accounts.<name>.pollIntervalMs` | `120000` | Interval between PR polling passes |
-| `accounts.<name>.repositories` | — | Repository allowlist in `owner/repo` form; at least one is required |
-| `accounts.<name>.review.maxToolCalls` | `30` | Tool-call budget for one review turn; the guard rejects further calls |
-| `accounts.<name>.review.toolTimeoutMs` | `30000` | Per-tool-call timeout |
-| `accounts.<name>.review.toolResultLimit` | `60000` | Maximum tool-result characters returned to the model per call |
-| `accounts.<name>.review.timeoutMs` | `900000` | Overall deadline for one turn; the agent is cancelled past it |
-| `accounts.<name>.review.defaultInstructions` | — | Fallback instructions used only when `.github/review_instructions.md` is missing from the base repository |
-| `accounts.<name>.mcp.command` | — | Command used to start the per-turn GitHub MCP server (required) |
-| `accounts.<name>.mcp.args` | — | Arguments for the server; include explicit `--tools=...` (required) |
-| `accounts.<name>.mcp.env` | `{}` | Extra MCP server environment variables; GitHub tokens are injected automatically |
-| `accounts.<name>.mcp.cwd` | — | Optional working directory for the server |
-| `accounts.<name>.statePath` | `./.dsh-github-reviewer/<name>.json` | Cursor state file path |
+| `name` | `default` | Account label used in logs and the default cursor file path |
+| `appId` | — | GitHub App ID (required) |
+| `installationId` | — | GitHub App installation ID used to mint installation tokens (required) |
+| `privateKeyPath` | — | Local PEM private key path for signing GitHub App JWTs (required) |
+| `baseUrl` | `https://api.github.com` | GitHub REST API base URL |
+| `webUrl` | `https://github.com` | GitHub web URL and MCP `GITHUB_HOST` value |
+| `pollIntervalMs` | `120000` | Interval between PR polling passes |
+| `repositories` | — | Repository allowlist in `owner/repo` form; at least one is required |
+| `review.maxToolCalls` | `30` | Tool-call budget for one review turn; the guard rejects further calls |
+| `review.toolTimeoutMs` | `30000` | Per-tool-call timeout |
+| `review.toolResultLimit` | `60000` | Maximum tool-result characters returned to the model per call |
+| `review.timeoutMs` | `900000` | Overall deadline for one turn; the agent is cancelled past it |
+| `review.defaultInstructions` | — | Fallback instructions used only when `.github/review_instructions.md` is missing from the base repository |
+| `mcp.command` | — | Command used to start the per-turn GitHub MCP server (required) |
+| `mcp.args` | — | Arguments for the server; include explicit `--tools=...` (required) |
+| `mcp.env` | `{}` | Extra MCP server environment variables; GitHub tokens are injected automatically |
+| `mcp.cwd` | — | Optional working directory for the server |
+| `statePath` | `./.dsh-github-reviewer/<name>.json` | Cursor state file path |
+
 
 Misconfiguration fails the plugin at load: missing credentials, invalid repository names, unreadable private keys, and missing MCP command/args all throw during activation instead of silently skipping reviews.
 
