@@ -43,6 +43,30 @@ export class GitHubApiError extends Error {
   }
 }
 
+/** Rate-limit (429, or 403 with an exhausted budget) API error. */
+export class GitHubRateLimitError extends GitHubApiError {
+  /**
+   * @param method - HTTP method.
+   * @param apiPath - API path.
+   * @param status - HTTP status code.
+   * @param body - response body, for diagnostics.
+   * @param retryAfterSeconds - parsed `Retry-After` header, when present.
+   */
+  constructor(
+    method: string,
+    apiPath: string,
+    status: number,
+    body: string,
+    readonly retryAfterSeconds?: number,
+  ) {
+    super(method, apiPath, status, body)
+    this.name = 'GitHubRateLimitError'
+  }
+}
+
+/** Upper bound on paginated listing pages, guarding against misbehaving endpoints. */
+const MAX_LIST_PAGES = 50
+
 /** Raw JSON fields shared by raw PR ref objects. */
 interface RawPullRequestRef {
   sha?: unknown
@@ -71,6 +95,7 @@ interface RawIssueComment {
   body?: unknown
   html_url?: unknown
   created_at?: unknown
+  author_association?: unknown
   user?: { login?: unknown; type?: unknown } | null
 }
 
@@ -165,11 +190,26 @@ export class GitHubClient {
     const response = await this.fetchImpl(url, { method, headers, body: bodyText, signal })
     const text = (await response.text()).slice(0, 8 << 20)
     if (response.status === 404) throw new NotFoundError(apiPath, truncateForError(text))
+    if (response.status === 429 || (response.status === 403 && response.headers.get('x-ratelimit-remaining') === '0')) {
+      const retryAfterRaw = response.headers.get('retry-after')
+      const retryAfter = retryAfterRaw === null ? Number.NaN : Number.parseInt(retryAfterRaw, 10)
+      throw new GitHubRateLimitError(
+        method,
+        apiPath,
+        response.status,
+        truncateForError(text),
+        Number.isNaN(retryAfter) ? undefined : retryAfter,
+      )
+    }
     if (response.status < 200 || response.status >= 300) {
       throw new GitHubApiError(method, apiPath, response.status, truncateForError(text))
     }
     if (text === '') return undefined as T
-    return JSON.parse(text) as T
+    try {
+      return JSON.parse(text) as T
+    } catch (error) {
+      throw new GitHubApiError(method, apiPath, response.status, `invalid JSON response: ${String(error)}`)
+    }
   }
 
   /**
@@ -180,10 +220,11 @@ export class GitHubClient {
    */
   async listOpenPullRequests(repo: Repository, signal?: AbortSignal): Promise<PullRequest[]> {
     const out: PullRequest[] = []
-    for (let page = 1; ; page++) {
+    const apiPath = `/repos/${pathPart(repo.owner)}/${pathPart(repo.name)}/pulls`
+    for (let page = 1; page <= MAX_LIST_PAGES; page++) {
       const raws = await this.doJSON<RawPullRequest[]>(
         'GET',
-        `/repos/${pathPart(repo.owner)}/${pathPart(repo.name)}/pulls`,
+        apiPath,
         { state: 'open', per_page: '100', page: String(page) },
         undefined,
         signal,
@@ -191,6 +232,7 @@ export class GitHubClient {
       for (const raw of raws) out.push(parseRawPullRequest(raw))
       if (raws.length < 100) return out
     }
+    throw new Error(`github api GET ${apiPath}: exceeded ${MAX_LIST_PAGES} pages`)
   }
 
   /**
@@ -263,12 +305,13 @@ export class GitHubClient {
    */
   async listIssueComments(repo: Repository, prNumber: number, since: Date | undefined, signal?: AbortSignal): Promise<IssueComment[]> {
     const out: IssueComment[] = []
-    for (let page = 1; ; page++) {
+    const apiPath = `/repos/${pathPart(repo.owner)}/${pathPart(repo.name)}/issues/${prNumber}/comments`
+    for (let page = 1; page <= MAX_LIST_PAGES; page++) {
       const query: Record<string, string> = { per_page: '100', page: String(page) }
       if (since !== undefined) query.since = since.toISOString()
       const raws = await this.doJSON<RawIssueComment[]>(
         'GET',
-        `/repos/${pathPart(repo.owner)}/${pathPart(repo.name)}/issues/${prNumber}/comments`,
+        apiPath,
         query,
         undefined,
         signal,
@@ -278,12 +321,14 @@ export class GitHubClient {
           id: asNumber(raw.id),
           body: asString(raw.body),
           user: { login: asString(raw.user?.login), type: asString(raw.user?.type) },
+          authorAssociation: asString(raw.author_association),
           createdAt: new Date(asString(raw.created_at)),
           htmlUrl: asString(raw.html_url),
         })
       }
       if (raws.length < 100) return out
     }
+    throw new Error(`github api GET ${apiPath}: exceeded ${MAX_LIST_PAGES} pages`)
   }
 
   /**
@@ -296,7 +341,8 @@ export class GitHubClient {
    */
   async listReviewComments(repo: Repository, prNumber: number, since: Date | undefined, signal?: AbortSignal): Promise<ReviewComment[]> {
     const out: ReviewComment[] = []
-    for (let page = 1; ; page++) {
+    const apiPath = `/repos/${pathPart(repo.owner)}/${pathPart(repo.name)}/pulls/${prNumber}/comments`
+    for (let page = 1; page <= MAX_LIST_PAGES; page++) {
       const query: Record<string, string> = {
         sort: 'created',
         direction: 'asc',
@@ -306,7 +352,7 @@ export class GitHubClient {
       if (since !== undefined) query.since = since.toISOString()
       const raws = await this.doJSON<RawReviewComment[]>(
         'GET',
-        `/repos/${pathPart(repo.owner)}/${pathPart(repo.name)}/pulls/${prNumber}/comments`,
+        apiPath,
         query,
         undefined,
         signal,
@@ -316,6 +362,7 @@ export class GitHubClient {
           id: asNumber(raw.id),
           body: asString(raw.body),
           user: { login: asString(raw.user?.login), type: asString(raw.user?.type) },
+          authorAssociation: asString(raw.author_association),
           createdAt: new Date(asString(raw.created_at)),
           htmlUrl: asString(raw.html_url),
           path: asString(raw.path),
@@ -324,6 +371,7 @@ export class GitHubClient {
       }
       if (raws.length < 100) return out
     }
+    throw new Error(`github api GET ${apiPath}: exceeded ${MAX_LIST_PAGES} pages`)
   }
 
   /**

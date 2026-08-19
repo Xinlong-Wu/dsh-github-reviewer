@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { GitHubClient, NotFoundError } from '../src/github/client.ts'
+import { GitHubApiError, GitHubClient, GitHubRateLimitError, NotFoundError } from '../src/github/client.ts'
 import type { PullRequest } from '../src/github/model.ts'
 
 const repo = { owner: 'owner', name: 'repo' }
@@ -53,7 +53,23 @@ describe('GitHubClient.listOpenPullRequests', () => {
 })
 
 describe('GitHubClient.reviewInstructions', () => {
-  it('prefers the base ref, then the base SHA', async () => {
+  it('prefers the base ref when it exists and never consults the base SHA', async () => {
+    const fetchImpl = vi.fn(async (url: string | URL | Request) => {
+      const u = new URL(String(url))
+      if (u.searchParams.get('ref') === 'main') {
+        return new Response(JSON.stringify({ type: 'file', encoding: 'base64', content: Buffer.from('trusted-by-ref\n').toString('base64') }), { status: 200 })
+      }
+      throw new Error('the base SHA path must not be requested when the base ref read succeeds')
+    })
+    const pr = prPayload() as unknown as PullRequest
+    const outcome = await client(fetchImpl as typeof fetch).reviewInstructions(pr)
+    expect(outcome.ok).toBe(true)
+    expect(outcome.instructions?.text).toBe('trusted-by-ref\n')
+    expect(outcome.instructions?.source).toBe('owner/repo@main:.github/review_instructions.md')
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+  })
+
+  it('falls back to the base SHA when the base ref read 404s', async () => {
     const fetchImpl = vi.fn(async (url: string | URL | Request) => {
       const u = new URL(String(url))
       if (u.searchParams.get('ref') === 'main') return new Response('', { status: 404 })
@@ -91,6 +107,19 @@ describe('GitHubClient.reviewInstructions', () => {
     const pr = prPayload() as unknown as PullRequest
     await expect(client(fetchImpl as typeof fetch).reviewInstructions(pr)).rejects.toThrow('status=500')
   })
+
+  it('throws GitHubApiError when the base-ref read fails with a 500 instead of falling back to the SHA', async () => {
+    const fetchImpl = vi.fn(async (url: string | URL | Request) => {
+      const u = new URL(String(url))
+      if (u.searchParams.get('ref') === 'main') return new Response('boom', { status: 500 })
+      return new Response(JSON.stringify({ type: 'file', encoding: 'base64', content: Buffer.from('unreachable').toString('base64') }), { status: 200 })
+    })
+    const pr = prPayload() as unknown as PullRequest
+    const error = await client(fetchImpl as typeof fetch).reviewInstructions(pr).then(() => null, (caught: unknown) => caught)
+    expect(error).toBeInstanceOf(GitHubApiError)
+    expect((error as GitHubApiError).status).toBe(500)
+    expect(String(error)).toContain('status=500')
+  })
 })
 
 describe('GitHubClient comments', () => {
@@ -115,6 +144,24 @@ describe('GitHubClient comments', () => {
     expect(review[0].path).toBe('a.ts')
   })
 
+  it('parses the author association of issue comments', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify([
+      { id: 1, body: '/bot hi', html_url: 'u', created_at: '2026-01-01T00:00:00Z', author_association: 'OWNER', user: { login: 'alice', type: 'User' } },
+    ]), { status: 200 }))
+    const issue = await client(fetchImpl as typeof fetch).listIssueComments(repo, 42)
+    expect(issue).toHaveLength(1)
+    expect(issue[0].authorAssociation).toBe('OWNER')
+    expect(issue[0].user.login).toBe('alice')
+  })
+
+  it('parses the author association of review comments', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify([
+      { id: 2, body: 'thread', html_url: 'u', path: 'a.ts', created_at: '2026-01-01T01:00:00Z', in_reply_to_id: 0, author_association: 'CONTRIBUTOR', user: { login: 'bob', type: 'User' } },
+    ]), { status: 200 }))
+    const review = await client(fetchImpl as typeof fetch).listReviewComments(repo, 42)
+    expect(review[0].authorAssociation).toBe('CONTRIBUTOR')
+  })
+
   it('posts issue comments and review comment replies', async () => {
     const fetchImpl = vi.fn(async (_url: string | URL | Request) => new Response('', { status: 201 }))
     const c = client(fetchImpl as typeof fetch)
@@ -123,5 +170,44 @@ describe('GitHubClient comments', () => {
     const urls = fetchImpl.mock.calls.map(call => String(call[0]))
     expect(urls[0]).toContain('/issues/42/comments')
     expect(urls[1]).toContain('/pulls/42/comments/7/replies')
+  })
+})
+
+describe('GitHubClient error handling', () => {
+  it('throws GitHubRateLimitError with retryAfterSeconds from the retry-after header on 429', async () => {
+    const fetchImpl = vi.fn(async () => new Response('rate limited', { status: 429, headers: { 'retry-after': '30' } }))
+    const error = await client(fetchImpl as typeof fetch).listOpenPullRequests(repo).then(() => null, (caught: unknown) => caught)
+    expect(error).toBeInstanceOf(GitHubRateLimitError)
+    expect((error as GitHubRateLimitError).status).toBe(429)
+    expect((error as GitHubRateLimitError).retryAfterSeconds).toBe(30)
+  })
+
+  it('throws GitHubRateLimitError for 403 with an exhausted rate-limit budget', async () => {
+    const fetchImpl = vi.fn(async () => new Response('rate limited', { status: 403, headers: { 'x-ratelimit-remaining': '0' } }))
+    const error = await client(fetchImpl as typeof fetch).listOpenPullRequests(repo).then(() => null, (caught: unknown) => caught)
+    expect(error).toBeInstanceOf(GitHubRateLimitError)
+    expect((error as GitHubRateLimitError).status).toBe(403)
+    expect((error as GitHubRateLimitError).retryAfterSeconds).toBeUndefined()
+  })
+
+  it('keeps 403 with a remaining budget a plain GitHubApiError', async () => {
+    const fetchImpl = vi.fn(async () => new Response('nope', { status: 403, headers: { 'x-ratelimit-remaining': '5' } }))
+    const error = await client(fetchImpl as typeof fetch).listOpenPullRequests(repo).then(() => null, (caught: unknown) => caught)
+    expect(error).toBeInstanceOf(GitHubApiError)
+    expect(error).not.toBeInstanceOf(GitHubRateLimitError)
+  })
+
+  it('wraps unparseable JSON responses in GitHubApiError', async () => {
+    const fetchImpl = vi.fn(async () => new Response('not json', { status: 200 }))
+    const error = await client(fetchImpl as typeof fetch).listOpenPullRequests(repo).then(() => null, (caught: unknown) => caught)
+    expect(error).toBeInstanceOf(GitHubApiError)
+    expect(String(error)).toContain('invalid JSON response')
+  })
+
+  it('caps pagination at 50 pages', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify(Array.from({ length: 100 }, (_, index) => prPayload({ number: index + 1 }))), { status: 200 }))
+    const error = await client(fetchImpl as typeof fetch).listOpenPullRequests(repo).then(() => null, (caught: unknown) => caught)
+    expect(String(error)).toContain('exceeded 50 pages')
+    expect(fetchImpl).toHaveBeenCalledTimes(50)
   })
 })

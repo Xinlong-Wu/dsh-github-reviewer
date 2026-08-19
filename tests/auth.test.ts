@@ -68,6 +68,50 @@ describe('AppTokenSource', () => {
     await expect(source.token()).rejects.toThrow('missing token')
   })
 
+  it('rejects responses missing or mis-dating expires_at', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ token: 'tok-1' }), { status: 201 })))
+    const missing = new AppTokenSource('12345', '987', pem, 'https://api.github.com', () => NOW)
+    await expect(missing.token()).rejects.toThrow('missing expires_at')
+
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ token: 'tok-1', expires_at: 'not-a-date' }), { status: 201 })))
+    const invalid = new AppTokenSource('12345', '987', pem, 'https://api.github.com', () => NOW)
+    await expect(invalid.token()).rejects.toThrow('missing expires_at')
+  })
+
+  it('shares one refresh across concurrent token() calls', async () => {
+    let resolveFetch: ((value: Response) => void) | undefined
+    const fetchImpl = vi.fn(() => new Promise<Response>(resolve => { resolveFetch = resolve }))
+    vi.stubGlobal('fetch', fetchImpl)
+    const source = new AppTokenSource('12345', '987', pem, 'https://api.github.com', () => NOW)
+
+    const first = source.token()
+    const second = source.token()
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+
+    resolveFetch?.(new Response(JSON.stringify({ token: 'tok-1', expires_at: '2026-01-02T04:00:00Z' }), { status: 201 }))
+    await expect(first).resolves.toBe('tok-1')
+    await expect(second).resolves.toBe('tok-1')
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+  })
+
+  it('falls back to the still-valid cache when a refresh fails', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ token: 'tok-1', expires_at: '2026-01-02T04:00:00Z' }), { status: 201 }))
+    vi.stubGlobal('fetch', fetchImpl)
+    let clock = NOW
+    const source = new AppTokenSource('12345', '987', pem, 'https://api.github.com', () => clock)
+
+    // First call mints and caches a token.
+    await expect(source.token()).resolves.toBe('tok-1')
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+
+    // Move into the refresh window (before expiry), then make the refresh fail:
+    // the still-valid cache must be returned instead of an error.
+    clock = new Date(Date.parse('2026-01-02T03:59:00Z'))
+    fetchImpl.mockRejectedValueOnce(new Error('network down'))
+    await expect(source.token()).resolves.toBe('tok-1')
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+  })
+
   it('surfaces non-2xx responses', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('nope', { status: 403 })))
     const source = new AppTokenSource('12345', '987', pem, 'https://api.github.com', () => NOW)

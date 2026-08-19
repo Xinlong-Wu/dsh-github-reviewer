@@ -52,6 +52,8 @@ export interface IssueComment {
   id: number
   body: string
   user: CommentUser
+  /** GitHub `author_association`: OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR, NONE, etc. */
+  authorAssociation: string
   createdAt: Date
   htmlUrl: string
 }
@@ -61,6 +63,8 @@ export interface ReviewComment {
   id: number
   body: string
   user: CommentUser
+  /** GitHub `author_association`: OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR, NONE, etc. */
+  authorAssociation: string
   createdAt: Date
   htmlUrl: string
   path: string

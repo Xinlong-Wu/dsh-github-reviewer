@@ -9,11 +9,6 @@ import { createPrivateKey, sign } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { truncateForError } from './model.ts'
 
-/** Default GitHub REST API base URL. */
-export const DEFAULT_BASE_URL = 'https://api.github.com'
-/** Default GitHub web URL. */
-export const DEFAULT_WEB_URL = 'https://github.com'
-
 /** App JWT lifetime. */
 const APP_JWT_LIFETIME_SECONDS = 9 * 60
 /** Backdate applied to the JWT `iat` claim. */
@@ -106,6 +101,8 @@ export class AppTokenSource implements TokenSource {
   private keyPem: string
   private cachedToken = ''
   private cachedExpiresAt = new Date(0)
+  /** In-flight refresh, so concurrent `token()` calls share one exchange. */
+  private refreshing?: Promise<string>
 
   /**
    * @param appId - GitHub App ID.
@@ -151,7 +148,9 @@ export class AppTokenSource implements TokenSource {
   }
 
   /**
-   * Return a currently valid installation token.
+   * Return a currently valid installation token. Concurrent callers share one
+   * in-flight refresh; when a refresh fails but the cached token is still
+   * valid, the cache is returned instead of failing the caller.
    * @param signal - optional cancellation for the refresh request.
    * @returns the bearer token.
    */
@@ -160,10 +159,26 @@ export class AppTokenSource implements TokenSource {
     if (this.cachedToken !== '' && now.getTime() + TOKEN_REFRESH_BEFORE_MS < this.cachedExpiresAt.getTime()) {
       return this.cachedToken
     }
-    const jwt = makeAppJWT(this.appId, this.keyPem, now)
-    const refreshed = await createInstallationToken(this.baseURL, this.installationId, jwt, signal)
-    this.cachedToken = refreshed.token
-    this.cachedExpiresAt = refreshed.expiresAt
-    return refreshed.token
+    this.refreshing ??= this.refresh(now, signal)
+    return this.refreshing
+  }
+
+  /** Exchange a fresh JWT for an installation token, updating the cache. */
+  private async refresh(now: Date, signal?: AbortSignal): Promise<string> {
+    try {
+      const jwt = makeAppJWT(this.appId, this.keyPem, now)
+      const refreshed = await createInstallationToken(this.baseURL, this.installationId, jwt, signal)
+      this.cachedToken = refreshed.token
+      this.cachedExpiresAt = refreshed.expiresAt
+      return refreshed.token
+    } catch (error) {
+      // Fall back to the still-valid cache rather than failing every caller.
+      if (this.cachedToken !== '' && this.now().getTime() < this.cachedExpiresAt.getTime()) {
+        return this.cachedToken
+      }
+      throw error
+    } finally {
+      this.refreshing = undefined
+    }
   }
 }
