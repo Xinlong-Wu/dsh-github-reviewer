@@ -146,8 +146,8 @@ interface MakeRunnerOptions {
   account?: ResolvedAccountConfig
   /** MCP host factory override; `null` disables the fake so the real StdioMcpHost.connect is used. */
   hostFactory?: ((token: string, signal: AbortSignal) => Promise<McpHost>) | null
-  /** Resolved model override from `review.models`. */
-  modelOverride?: { provider: string; model: string }
+  /** `llm` service mock used by `review.models` resolution. */
+  llm?: { listModels(provider: string): Promise<Array<{ id: string }>> }
   /** Session-title service mock. */
   sessionTitle?: {
     get: ReturnType<typeof vi.fn>
@@ -165,7 +165,7 @@ function makeRunner(world: World, sessionPersistence?: { listSnapshots: () => Pr
       resume: world.resume,
     } as unknown as AgentRegistry,
     agentDefaultModel: { currentSelection: () => ({ provider: 'deepseek', model: 'deepseek-chat' }) },
-    ...options.modelOverride === undefined ? {} : { modelOverride: options.modelOverride },
+    ...options.llm === undefined ? {} : { llm: options.llm },
     ...options.sessionTitle === undefined ? {} : { sessionTitle: options.sessionTitle },
     sessions: { flush: vi.fn(async () => true) } as unknown as SessionStore,
     ...sessionPersistence === undefined ? {} : { sessionPersistence: sessionPersistence as never },
@@ -232,9 +232,18 @@ describe('AgentRunner agent lifecycle', () => {
     await runner.dispose()
   })
 
-  it('uses the resolved model override instead of the deployment default', async () => {
+  it('resolves the first available review.model at session creation', async () => {
     const world = makeWorld()
-    const { runner } = makeRunner(world, undefined, { modelOverride: { provider: 'prov-a', model: 'model-a' } })
+    const llm = {
+      listModels: async (provider: string) => {
+        if (provider === 'prov-a') return [{ id: 'model-a' }, { id: 'other' }]
+        throw new Error(`unknown provider ${provider}`)
+      },
+    }
+    const { runner } = makeRunner(world, undefined, {
+      account: { ...account, review: { ...account.review, models: [{ provider: 'prov-a', model: 'model-a' }, { provider: 'prov-b', model: 'model-b' }] } },
+      llm,
+    })
     const signal = new AbortController().signal
 
     const reviewPromise = runner.driveReview(pr, { text: 'trusted', source: 'x' }, signal)
@@ -242,6 +251,36 @@ describe('AgentRunner agent lifecycle', () => {
     await reviewPromise
 
     expect((world.createOptions[0] as { agentOptions: unknown }).agentOptions).toEqual({ provider: 'prov-a', model: 'model-a' })
+    await runner.dispose()
+  })
+
+  it('aborts the review when none of the review.models is available', async () => {
+    const world = makeWorld()
+    const llm = { listModels: async () => { throw new Error('unknown provider') } }
+    const { runner } = makeRunner(world, undefined, {
+      account: { ...account, review: { ...account.review, models: [{ provider: 'prov-a', model: 'model-a' }] } },
+      llm,
+    })
+    const signal = new AbortController().signal
+
+    await expect(runner.driveReview(pr, { text: 'trusted', source: 'x' }, signal)).rejects.toThrow(
+      'none of the configured review.models is available',
+    )
+    expect(world.create).not.toHaveBeenCalled()
+    await runner.dispose()
+  })
+
+  it('aborts the review when review.models is configured but the llm service is missing', async () => {
+    const world = makeWorld()
+    const { runner } = makeRunner(world, undefined, {
+      account: { ...account, review: { ...account.review, models: [{ provider: 'prov-a', model: 'model-a' }] } },
+    })
+    const signal = new AbortController().signal
+
+    await expect(runner.driveReview(pr, { text: 'trusted', source: 'x' }, signal)).rejects.toThrow(
+      'does not mount the llm service',
+    )
+    expect(world.create).not.toHaveBeenCalled()
     await runner.dispose()
   })
 
