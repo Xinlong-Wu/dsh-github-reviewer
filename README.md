@@ -2,6 +2,11 @@
 
 [English](README.en.md) | 中文
 
+[![npm version](https://img.shields.io/npm/v/@xinlongwu/dsh-github-reviewer)](https://www.npmjs.com/package/@xinlongwu/dsh-github-reviewer)
+[![CI](https://github.com/Xinlong-Wu/dsh-github-reviewer/actions/workflows/ci.yml/badge.svg)](https://github.com/Xinlong-Wu/dsh-github-reviewer/actions/workflows/ci.yml)
+[![license](https://img.shields.io/npm/l/@xinlongwu/dsh-github-reviewer)](https://github.com/Xinlong-Wu/dsh-github-reviewer/blob/main/LICENSE)
+[![node](https://img.shields.io/node/v/@xinlongwu/dsh-github-reviewer)](https://nodejs.org)
+
 一个 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 插件：轮询配置的 GitHub 仓库中开放的 pull request，并自动发布 `COMMENT` 评审。它是 [LingoBridge](https://github.com/Xinlong-Wu/LingoBridge) 内置 GitHub reviewer 的 TypeScript 移植，并且每次评审和 `/bot` 对话都通过 **harness agent 主循环**驱动：每个 PR 一个常驻 Agent、每个 PR 一条会话日志，通过 harness 的 session-persistence 机制持久化。
 
 ## 功能特性
@@ -59,6 +64,56 @@ npm install @xinlongwu/dsh-github-reviewer
 ```
 
 peer 依赖：`@deepseek-ai/cordis`（harness 的 Cordis 运行时）。
+
+### 在运行中的 DSH 实例上启用
+
+假设实例的 profile 目录为 `$DSH_HOME/profiles/web`（`DSH_HOME` 默认为 `~/.dsh`），且组合已包含 storage 链与 agent 循环（官方 `dsh-base` + `dsh-web-app` bundle 自带）。
+
+**1. 安装 GitHub MCP server**（官方 Go 版，工具名与守卫匹配）：
+
+```sh
+# Linux x86_64；其他架构替换资产名
+curl -sL https://github.com/github/github-mcp-server/releases/latest/download/github-mcp-server_Linux_x86_64.tar.gz \
+  | tar -xz -C ~/.local/bin github-mcp-server
+github-mcp-server --version
+```
+
+也可以用容器运行（`ghcr.io/github/github-mcp-server`），此时 `mcp.command` 用 `docker`，见下文注释。
+
+**2. 把插件装进 profile**：
+
+```sh
+cd "$DSH_HOME/profiles/web"
+# 在 package.json 的 dependencies 中加入：
+#   "@xinlongwu/dsh-github-reviewer": "^0.1.0-rc2"
+npx pnpm install
+ls node_modules/@xinlongwu/dsh-github-reviewer/lib/index.js   # 确认安装成功
+```
+
+**3. 在 `$DSH_HOME/profiles/web/cordis.patch.yml` 追加插件行**：
+
+```yaml
+- id: github-reviewer
+  name: '@xinlongwu/dsh-github-reviewer'
+  config:
+    name: personal
+    # 二选一：GitHub App 三件套（appId/installationId/privateKeyPath）
+    # 或个人访问令牌：
+    personalAccessToken: 'github_pat_...'
+    repositories:
+      - 'owner/repo'
+    mcp:
+      command: 'github-mcp-server'
+      args: ['stdio', '--tools=pull_requests,repos,issues']
+      # 容器方案则为：
+      # command: 'docker'
+      # args: ['run', '-i', '--rm', '-e', 'GITHUB_PERSONAL_ACCESS_TOKEN', '-e', 'GITHUB_HOST',
+      #        'ghcr.io/github/github-mcp-server', 'stdio', '--tools=pull_requests,repos,issues']
+```
+
+**4. 创建 PAT**（PAT 模式）：GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens，仅授权目标仓库，权限：Contents: Read、Pull requests: Read & Write、Issues: Read & Write、Checks: Read（Metadata 自动附带）。
+
+**5. 重启实例并验证**：启动日志应出现 `starting github account=personal repos=1`；开放 PR 会在下一个轮询周期收到 COMMENT 评审，PR 下评论 `/bot <问题>` 可与评审器对话。
 
 ## 配置
 

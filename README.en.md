@@ -2,6 +2,11 @@
 
 English | [中文](README.md)
 
+[![npm version](https://img.shields.io/npm/v/@xinlongwu/dsh-github-reviewer)](https://www.npmjs.com/package/@xinlongwu/dsh-github-reviewer)
+[![CI](https://github.com/Xinlong-Wu/dsh-github-reviewer/actions/workflows/ci.yml/badge.svg)](https://github.com/Xinlong-Wu/dsh-github-reviewer/actions/workflows/ci.yml)
+[![license](https://img.shields.io/npm/l/@xinlongwu/dsh-github-reviewer)](https://github.com/Xinlong-Wu/dsh-github-reviewer/blob/main/LICENSE)
+[![node](https://img.shields.io/node/v/@xinlongwu/dsh-github-reviewer)](https://nodejs.org)
+
 A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) plugin that polls configured GitHub repositories for open pull requests and posts automated `COMMENT` reviews. It is a TypeScript port of the GitHub reviewer built into [LingoBridge](https://github.com/Xinlong-Wu/LingoBridge), and it drives every review and `/bot` chat through the **harness agent loop**: one live Agent per PR, one session log per PR, durable through the harness session-persistence seam.
 
 ## Features
@@ -59,6 +64,56 @@ npm install @xinlongwu/dsh-github-reviewer
 ```
 
 Peer dependency: `@deepseek-ai/cordis` (the harness Cordis runtime).
+
+### Enabling on a running DSH instance
+
+Assume the instance profile lives at `$DSH_HOME/profiles/web` (`DSH_HOME` defaults to `~/.dsh`) and the composition already includes the storage chain and the agent loop (bundled with the official `dsh-base` + `dsh-web-app`).
+
+**1. Install the GitHub MCP server** (the official Go server; its tool names match the guard):
+
+```sh
+# Linux x86_64; substitute the asset name for other architectures
+curl -sL https://github.com/github/github-mcp-server/releases/latest/download/github-mcp-server_Linux_x86_64.tar.gz \
+  | tar -xz -C ~/.local/bin github-mcp-server
+github-mcp-server --version
+```
+
+A container works too (`ghcr.io/github/github-mcp-server`); see the commented `mcp` block below.
+
+**2. Install the plugin into the profile**:
+
+```sh
+cd "$DSH_HOME/profiles/web"
+# Add to dependencies in package.json:
+#   "@xinlongwu/dsh-github-reviewer": "^0.1.0-rc2"
+npx pnpm install
+ls node_modules/@xinlongwu/dsh-github-reviewer/lib/index.js   # confirm the install
+```
+
+**3. Add the plugin row to `$DSH_HOME/profiles/web/cordis.patch.yml`**:
+
+```yaml
+- id: github-reviewer
+  name: '@xinlongwu/dsh-github-reviewer'
+  config:
+    name: personal
+    # Either the GitHub App triple (appId/installationId/privateKeyPath)
+    # or a personal access token:
+    personalAccessToken: 'github_pat_...'
+    repositories:
+      - 'owner/repo'
+    mcp:
+      command: 'github-mcp-server'
+      args: ['stdio', '--tools=pull_requests,repos,issues']
+      # Container variant:
+      # command: 'docker'
+      # args: ['run', '-i', '--rm', '-e', 'GITHUB_PERSONAL_ACCESS_TOKEN', '-e', 'GITHUB_HOST',
+      #        'ghcr.io/github/github-mcp-server', 'stdio', '--tools=pull_requests,repos,issues']
+```
+
+**4. Create a PAT** (PAT mode): GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens, scoped to the target repository only, with permissions: Contents: Read, Pull requests: Read & Write, Issues: Read & Write, Checks: Read (Metadata is implicit).
+
+**5. Restart the instance and verify**: the startup log should show `starting github account=personal repos=1`; open PRs receive a COMMENT review within one poll interval, and commenting `/bot <question>` on a PR talks to the reviewer.
 
 ## Configuration
 

@@ -74,19 +74,20 @@ jobs:
       - name: Publish to npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
-        run: |
-          if [[ "$PKG_VERSION" == *-* ]]; then
-            # prerelease (e.g. 0.1.0-rc1): dist-tag "next", never "latest"
-            npm publish --provenance --tag next
-          else
-            npm publish --provenance
-          fi
+        # Every release — rc or stable — publishes to the default "latest"
+        # dist-tag so plain `npm install` always gets the newest build.
+        run: npm publish --provenance
 
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          PRERELEASE_FLAG=""
+          if [[ "$PKG_VERSION" == *-* ]]; then
+            PRERELEASE_FLAG="--prerelease"
+          fi
           gh release create "$GITHUB_REF_NAME" \
             --title "$GITHUB_REF_NAME" \
             --generate-notes \
+            $PRERELEASE_FLAG \
           || echo "::notice::Release $GITHUB_REF_NAME already exists, skipping"
