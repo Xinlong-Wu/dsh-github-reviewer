@@ -1,28 +1,36 @@
 # DeepSeek Harness cordis.yml example for dsh-github-reviewer.
+# 本文件为可编辑脚手架（editable scaffold）：llm / agent-spine / persistence 三段被注释，
+# 需替换为你部署实际使用的插件；storage 与 github-reviewer 段可直接用。
 # The plugin drives reviews through the harness agent loop, so the deployment
-# must mount the agent-loop family. A minimal set is shown below; swap in
-# whatever spine/LLM/persistence plugins your deployment already uses.
+# must mount the agent-loop family; swap in whatever spine/LLM/persistence
+# plugins your deployment already uses.
 #
 # Mount the plugin ONCE PER ACCOUNT (flat config, multi-instance pattern):
 # every entry below with `name: '@xinlongwu/dsh-github-reviewer'` runs one
 # independent poll loop.
 
-- id: llm-deepseek          # any LLM adapter
-  name: '@deepseek-ai/dsh-llm-deepseek'
-  $if: 'false'              # placeholder: mount your own LLM adapter
+# LLM adapter — replace with whatever LLM plugin your deployment uses.
+# - id: llm-deepseek
+#   name: '@deepseek-ai/dsh-llm-deepseek'
+#   config: { thinking: enabled, models: [{ id: deepseek-chat, contextWindow: 128000 }] }
 # The agent loop + system-prompt assembly + tool pipeline. The deployment's
 # default model selection (agentDefaultModel) drives every review agent; the
 # plugin does not configure a model.
 # - id: agent-spine
 #   name: '@deepseek-ai/dsh-agent-spine-demo'
-#   $if: 'false'            # placeholder
+#   config:
+#     agents: [{ id: main, provider: deepseek-official, model: deepseek-chat, cwd: !!js process.cwd() }]
 # Durable sessions: without this, PR sessions are memory-only across restarts.
 # - id: session-persistence-jsonl
 #   name: '@deepseek-ai/dsh-session-persistence-jsonl'
-#   $if: 'false'            # placeholder
-# The review cursor lives in a storage-domain record per account. Pick the
-# backend: JSON files (dsh-storage-json) or a real SQLite database
-# (dsh-storage-sqlite); route it in the storage-domain config below.
+#   config: { root: './.sessions' }
+# The review cursor lives in a storage-domain record per account. The storage
+# hub (@deepseek-ai/dsh-storage) must be mounted: both the JSON backend and the
+# storage-domain plugin depend on it. Pick the backend: JSON files
+# (dsh-storage-json) or a real SQLite database (dsh-storage-sqlite); route it
+# in the storage-domain config below.
+- id: storage
+  name: '@deepseek-ai/dsh-storage'
 - id: storage-json
   name: '@deepseek-ai/dsh-storage-json'
   config:
@@ -31,11 +39,19 @@
   name: '@deepseek-ai/dsh-storage-domain'
   config:
     backend: json
+# Default model selection for every review agent. The plugin does not configure
+# a model; it reads agentDefaultModel from this service. Required: without it,
+# the cordis fiber stays PENDING and the plugin silently never activates.
+- id: agent-default-model
+  name: '@deepseek-ai/dsh-agent-default-model'
+  config:
+    provider: deepseek-official
+    model: deepseek-chat
 
 - id: github-reviewer-org
   name: '@xinlongwu/dsh-github-reviewer'
   config:
-    # Account label used in logs and the default state file path.
+    # Account label used in logs and the cursor record key in the storage domain.
     name: org
     # Required GitHub App identity. The App needs:
     #   - Pull requests: read/write (reviews and comments)
@@ -62,6 +78,9 @@
       defaultInstructions: |
         Review this pull request for correctness, regressions, security issues,
         and missing tests. Leave concise inline comments where useful.
+      # Optional. GitHub author_association values allowed to trigger /review
+      # and /bot comments. ['*'] allows everyone; [] allows no one.
+      commandAuthorAssociations: ['OWNER', 'MEMBER', 'COLLABORATOR']
     # Required per-turn GitHub MCP server. The plugin injects
     # GITHUB_PERSONAL_ACCESS_TOKEN and GITHUB_HOST at runtime; do not
     # put GitHub tokens here.
@@ -82,7 +101,7 @@
     installationId: '123456'
     privateKeyPath: '/etc/dsh/github-app-2.pem'
     repositories:
-      - 'another/owner'
+      - 'another/repo'
     mcp:
       command: 'github-mcp-server'
       args:

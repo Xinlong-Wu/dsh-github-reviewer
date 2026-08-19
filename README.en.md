@@ -8,18 +8,18 @@ A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) plugin tha
 
 - Polls configured repositories for open pull requests; draft PRs are skipped.
 - Authenticates as a GitHub App: signs RS256 app JWTs and exchanges them for short-lived installation access tokens (cached until near expiry).
-- Reviews a PR when it first appears or when its `head.sha` changes; unchanged PRs are tracked in a per-account cursor file and not reviewed again.
+- Reviews a PR when it first appears or when its `head.sha` changes; unchanged PRs are tracked in a per-account cursor record in the storage domain and not reviewed again.
 - Reads trusted review instructions only from `.github/review_instructions.md` in the base repository (base branch, then base SHA). If the file is missing and `defaultInstructions` is configured, that text is used; otherwise the PR is marked `missing_instructions` and retried only after the head SHA changes.
 - **One harness Agent and session per PR.** Reviews and `/bot` chats on the same PR run in the same session, so the loop replays the PR's full conversation history — the model remembers earlier findings and discussions. Sessions persist across restarts through `sessionPersistence` when a provider is mounted, and the reviewer resumes the existing session instead of starting a fresh one.
 - Runs the review through the real agent loop: the review system prompt is registered as a `complete` system-prompt section on the PR agent, and the guarded GitHub tools are registered as scoped harness tools, so the loop's logging, checkpoints, and compaction all apply.
-- Spawns a fresh per-turn GitHub MCP server (`github-mcp-server`) over stdio, injecting the installation token as `GITHUB_PERSONAL_ACCESS_TOKEN` and the configured web URL as `GITHUB_HOST`.
+- Spawns a fresh per-turn GitHub MCP server (`github-mcp-server`) over stdio, injecting the installation token as `GITHUB_PERSONAL_ACCESS_TOKEN` and the configured web URL as `GITHUB_HOST`. On first contact with a PR it additionally spawns one short-lived MCP server for tool-schema discovery; after that, every turn gets a brand-new server.
 - Guards every tool call: calls must target the current PR, reads are limited to allowed methods and refs, and writes are limited to the `create` → inline comments → `submit_pending(event=COMMENT)` pending-review workflow.
 - Handles comment commands on already-processed PRs: `/review` triggers a re-review, `/bot <message>` continues the PR conversation and posts the reply to the issue thread or the review thread it answered.
 - Sanitizes untrusted PR title/body text before prompt placement (HTML comments/hidden attributes, invisible/control characters, markdown image alt text, markdown link titles, GitHub token-like strings).
 
 ## Deployment requirements
 
-The plugin injects the harness `agents` and `sessions` services, so the deployment must mount the agent-loop family. A minimal working composition needs at least these rows beside `github-reviewer` (see [cordis.yml.example](./cordis.yml.example) for the full annotated example):
+The plugin injects the harness `agents`, `sessions`, and `agentDefaultModel` services, so the deployment must mount the agent-loop family. A minimal working composition needs at least these rows beside `github-reviewer` (see [cordis.yml.example](./cordis.yml.example) for the full annotated example):
 
 ```yaml
 - id: llm-deepseek          # some LLM adapter
@@ -32,9 +32,21 @@ The plugin injects the harness `agents` and `sessions` services, so the deployme
 - id: persistence           # restart-safe per-PR sessions
   name: '@deepseek-ai/dsh-session-persistence-jsonl'
   config: { root: './.sessions' }
+- id: storage               # storage hub (storage-json and storage-domain both depend on it)
+  name: '@deepseek-ai/dsh-storage'
+- id: storage-json          # cursor storage backend (JSON files)
+  name: '@deepseek-ai/dsh-storage-json'
+  config: { root: './.storage' }
+- id: storage-domain        # cursor storage domain (dsh_github_reviewer)
+  name: '@deepseek-ai/dsh-storage-domain'
+  config: { backend: json }
+- id: agent-default-model   # default model selection for every review agent
+  name: '@deepseek-ai/dsh-agent-default-model'
+  config: { provider: deepseek-official, model: deepseek-chat }
 ```
 
-- **The model is not plugin-configured**: every review agent uses the deployment's default model selection (`agentDefaultModel`, provided by the agent-spine family, e.g. configured in `agent-spine-demo`'s `agents` entry).
+- **The model is not plugin-configured**: every review agent uses the deployment's default model selection (`agentDefaultModel`), provided by `@deepseek-ai/dsh-agent-default-model` on its own (config requires `{ provider, model }`), not by the agent-spine family.
+- **Unsatisfied dependencies silently deactivate the plugin**: when a cordis dependency is missing, the fiber stays PENDING forever and the plugin never activates — so the `agent-default-model` row and the storage rows (`storage` hub, `storage-json` backend, `storage-domain`) added above are required.
 - **The cursor needs the storage domain**: the `dsh_github_reviewer` domain is provided by `@deepseek-ai/dsh-storage-domain`, which needs a backend (`@deepseek-ai/dsh-storage-json` or `@deepseek-ai/dsh-storage-sqlite`) routed in the storage-domain config (e.g. `backend: json` or `backend: sqlite`). The plugin fails loudly at load without it.
 - **Without `sessionPersistence`**: the reviewer still works, but PR sessions are memory-only — after a restart the loop starts each PR from a fresh session.
 - **With `sessionPersistence`**: every turn is checkpointed, and the reviewer resumes the persisted PR session on restart (it never creates a second session for the same PR).
@@ -88,7 +100,7 @@ Multiple accounts = another plugin instance with the same `name`, each running i
 
 | Field | Default | Description |
 |---|---|---|
-| `name` | `default` | Account label used in logs and the default cursor file path |
+| `name` | `default` | Account label used in logs and the cursor record key |
 | `appId` | — | GitHub App ID (required) |
 | `installationId` | — | GitHub App installation ID used to mint installation tokens (required) |
 | `privateKeyPath` | — | Local PEM private key path for signing GitHub App JWTs (required) |
@@ -101,8 +113,9 @@ Multiple accounts = another plugin instance with the same `name`, each running i
 | `review.toolResultLimit` | `60000` | Maximum tool-result characters returned to the model per call |
 | `review.timeoutMs` | `900000` | Overall deadline for one turn; the agent is cancelled past it |
 | `review.defaultInstructions` | — | Fallback instructions used only when `.github/review_instructions.md` is missing from the base repository |
+| `review.commandAuthorAssociations` | `['OWNER','MEMBER','COLLABORATOR']` | GitHub `author_association` values allowed to trigger `/review` and `/bot` commands (case-insensitive); `['*']` allows everyone, an empty array allows no one |
 | `mcp.command` | — | Command used to start the per-turn GitHub MCP server (required) |
-| `mcp.args` | — | Arguments for the server; include explicit `--tools=...` (required) |
+| `mcp.args` | — | Arguments for the server; include explicit `--tools=...` (strongly recommended; the guard filters out tools not listed) |
 | `mcp.env` | `{}` | Extra MCP server environment variables; GitHub tokens are injected automatically |
 | `mcp.cwd` | — | Optional working directory for the server |
 
@@ -124,7 +137,7 @@ Cursor state lives in the harness storage domain (`dsh_github_reviewer` domain, 
 
 On first contact with a PR, the runner asks the agent registry for an Agent whose session id is derived from the account and PR (`github:<account>:<owner>:<repo>:pr:<number>`):
 
-- If the PR session already exists in `sessionPersistence`, it is **resumed** with the same setup world.
+- If the PR session already exists in `sessionPersistence`, it is **resumed** with the same setup world (world = the system-prompt sections and scoped tools registered on an agent's scope context at creation).
 - Otherwise a fresh agent and session are created; the session id is stable, so a later restart resumes the same PR conversation.
 
 The agent setup registers the review world on the unpublished agent context: a `complete` system-prompt section (the review or chat prompt, selected per turn), the four guarded GitHub tools as scoped tool definitions, and a tool restriction that hides **every global tool** from this agent — the model sees only the closed review tool set, mirroring LingoBridge's guarded-only handler. The session log is the durable per-PR history — later turns replay it through the loop, and checkpoints/compaction apply exactly as for interactive sessions.
@@ -133,7 +146,7 @@ The agent setup registers the review world on the unpublished agent context: a `
 
 1. Read trusted instructions from the base repository (base branch, then base SHA) or the configured default.
 2. Spawn the per-turn GitHub MCP server with a fresh installation token and `GITHUB_HOST` injected.
-3. Arm the turn slot (PR, flow, instructions, live host, guard state) and wake the PR agent with the review user prompt via `agent.followup`.
+3. Arm the turn slot (turn slot = the per-turn mutable context: current PR, flow, instructions, live MCP host, guard state) and wake the PR agent with the review user prompt via `agent.followup`.
 4. Await `agent.whenIdle()`: the loop drives model steps and tool calls; the guarded tools enforce the review rules on every call.
 5. Flush the session to persistence and mark the PR `reviewed` only when the guarded `submit_pending` call with `event=COMMENT` succeeded.
 
@@ -152,6 +165,9 @@ Approvals, request-changes reviews, thread resolution, PR updates, merges, and r
 
 The review system prompt is registered as the agent's complete system prompt and carries trusted instructions only from the base-repo file or the configured default. PR metadata, title/body, diffs, changed files, and tool output are untrusted context; the title/body is sanitized before prompt placement, and the prompt instructs the model not to follow instructions found in untrusted context.
 
+- Review session logs (including diffs and file contents) are written to disk through `sessionPersistence`; if the repository contains secrets, mind where these logs are stored.
+- The `complete` system-prompt section only replaces the prompt sections — it does not suppress the harness runtime contexts, so if the deployment mounts a workspace-context-style plugin, untrusted text can still reach the model input.
+
 ## Development
 
 ```sh
@@ -164,7 +180,7 @@ npm run build
 
 ## Known Limitations and Deferred Work
 
-- The cursor file is local to the process host; running two hosts against the same account would poll twice. PR sessions are durable through the harness, but review *triggers* are not (LingoBridge keeps both in its per-account store).
+- The cursor lives in the harness storage domain; with a single-host JSON-file backend, two hosts running the same account would still poll twice. PR sessions are durable through the harness, but review *triggers* are not (LingoBridge keeps both in its per-account store).
 - The plugin requires a full agent-loop deployment (`agents` + `sessions`); it no longer activates in bare compositions without them. Without a `sessionPersistence` provider, PR sessions are memory-only across restarts.
 - PR sessions share the session store with interactive sessions; they are visible and replayable there, but nothing labels them as reviewer sessions beyond the session id.
 - GitHub API rate limits are surfaced as errors and the poll continues on the next tick; there is no backoff beyond the poll interval.

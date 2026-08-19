@@ -8,18 +8,18 @@
 
 - 轮询配置的仓库中的开放 PR；跳过 draft PR。
 - 以 GitHub App 身份认证：签名 RS256 应用 JWT，换取短期安装访问令牌（临近过期前缓存复用）。
-- PR 首次出现或 `head.sha` 变化时触发评审；未变化的 PR 记录在每账户的游标文件中，不会重复评审。
+- PR 首次出现或 `head.sha` 变化时触发评审；未变化的 PR 记录在存储域的每账户游标记录中，不会重复评审。
 - 只从基础仓库的 `.github/review_instructions.md` 读取可信评审指令（先按 base 分支，再按 base SHA）。文件缺失且配置了 `defaultInstructions` 时使用该默认文本；否则该 PR 被标记为 `missing_instructions`，仅当 head SHA 变化后才重试。
 - **每个 PR 一个 harness Agent 与会话。** 同一 PR 的评审和 `/bot` 对话在同一个会话中进行，主循环会重放该 PR 的完整对话历史——模型记得之前的发现和讨论。挂载了持久化 provider 时，会话跨重启保留，评审器恢复既有会话而非新建。
 - 评审走真实 agent 主循环：评审系统提示以 `complete` 系统提示段注册在 PR agent 上，被守卫的 GitHub 工具以作用域工具形式注册——主循环的日志、检查点、压缩全部生效。
-- 每个回合启动一个全新的 `github-mcp-server`（stdio），注入安装令牌为 `GITHUB_PERSONAL_ACCESS_TOKEN`，配置的 web URL 为 `GITHUB_HOST`。
+- 每个回合启动一个全新的 `github-mcp-server`（stdio），注入安装令牌为 `GITHUB_PERSONAL_ACCESS_TOKEN`，配置的 web URL 为 `GITHUB_HOST`。首次接触某 PR 时会额外短暂启动一次 MCP server 用于工具 schema 发现，之后每个回合一台全新 server。
 - 守卫每一次工具调用：调用必须指向当前 PR，读取被限制在允许的方法和 ref，写入被限制在 `create` → 行内评论 → `submit_pending(event=COMMENT)` 的 pending-review 工作流。
 - 处理已处理 PR 上的评论命令：`/review` 触发重新评审，`/bot <消息>` 继续 PR 对话并把回复发回对应的 issue 线程或 review 线程。
 - 在把不可信 PR 标题/正文放入提示词前做清洗（HTML 注释/隐藏属性、不可见/控制字符、markdown 图片 alt 文本、markdown 链接标题、类 GitHub 令牌字符串）。
 
 ## 部署要求
 
-插件注入 harness 的 `agents` 与 `sessions` 服务，因此部署必须挂载 agent-loop 家族。除 `github-reviewer` 外，最小可用组合至少需要以下条目（完整带注释示例见 [cordis.yml.example](./cordis.yml.example)）：
+插件注入 harness 的 `agents`、`sessions` 与 `agentDefaultModel` 服务，因此部署必须挂载 agent-loop 家族。除 `github-reviewer` 外，最小可用组合至少需要以下条目（完整带注释示例见 [cordis.yml.example](./cordis.yml.example)）：
 
 ```yaml
 - id: llm-deepseek          # 任意 LLM adapter
@@ -32,9 +32,21 @@
 - id: persistence           # 跨重启的每 PR 会话
   name: '@deepseek-ai/dsh-session-persistence-jsonl'
   config: { root: './.sessions' }
+- id: storage               # storage hub（storage-json 与 storage-domain 都依赖它）
+  name: '@deepseek-ai/dsh-storage'
+- id: storage-json          # 游标存储后端（JSON 文件）
+  name: '@deepseek-ai/dsh-storage-json'
+  config: { root: './.storage' }
+- id: storage-domain        # 游标存储域（dsh_github_reviewer）
+  name: '@deepseek-ai/dsh-storage-domain'
+  config: { backend: json }
+- id: agent-default-model   # 所有评审 agent 的默认模型选择
+  name: '@deepseek-ai/dsh-agent-default-model'
+  config: { provider: deepseek-official, model: deepseek-chat }
 ```
 
-- **模型不由插件配置**：每个评审 agent 使用部署的默认模型选择（`agentDefaultModel`，由 agent-spine 家族提供，例如在 `agent-spine-demo` 的 `agents` 条目中配置）。
+- **模型不由插件配置**：每个评审 agent 使用部署的默认模型选择（`agentDefaultModel`），它由 `@deepseek-ai/dsh-agent-default-model` 单独提供（config 需 `{ provider, model }`），并非来自 agent-spine 家族。
+- **依赖不满足时插件不会激活**：cordis 依赖缺失时 fiber 会一直处于 PENDING、插件静默不激活——因此上面的 `agent-default-model` 行与整套存储行（`storage` hub、`storage-json` 后端、`storage-domain`）都是必需的。
 - **游标需要存储域**：`dsh_github_reviewer` 域由 `@deepseek-ai/dsh-storage-domain` 提供，需要挂一个后端（`@deepseek-ai/dsh-storage-json` 或 `@deepseek-ai/dsh-storage-sqlite`）并在 storage-domain 配置里路由（例如 `backend: json` 或 `backend: sqlite`）。未挂载时插件在加载期报错。
 - **没有 `sessionPersistence`**：评审器仍可用，但 PR 会话只在内存中——重启后每个 PR 从全新会话开始。
 - **有 `sessionPersistence`**：每个回合都会被检查点化，重启后评审器恢复已持久化的 PR 会话（同一个 PR 不会创建第二个会话）。
@@ -88,7 +100,7 @@ peer 依赖：`@deepseek-ai/cordis`（harness 的 Cordis 运行时）。
 
 | 字段 | 默认值 | 说明 |
 |---|---|---|
-| `name` | `default` | 账户标签，用于日志与默认游标文件路径 |
+| `name` | `default` | 账户标签，用于日志与游标记录键 |
 | `appId` | — | GitHub App ID（必填） |
 | `installationId` | — | 用于生成安装令牌的 GitHub App 安装 ID（必填） |
 | `privateKeyPath` | — | 用于签名 GitHub App JWT 的本地 PEM 私钥路径（必填） |
@@ -101,8 +113,9 @@ peer 依赖：`@deepseek-ai/cordis`（harness 的 Cordis 运行时）。
 | `review.toolResultLimit` | `60000` | 每次调用返回给模型的最大工具结果字符数 |
 | `review.timeoutMs` | `900000` | 单回合总截止时间；超时后取消 agent |
 | `review.defaultInstructions` | — | 仅当基础仓库缺少 `.github/review_instructions.md` 时使用的兜底指令 |
+| `review.commandAuthorAssociations` | `['OWNER','MEMBER','COLLABORATOR']` | 允许触发 `/review`、`/bot` 命令的评论作者身份（GitHub `author_association` 值，大小写不敏感）；`['*']` 允许所有人，空数组禁止所有人 |
 | `mcp.command` | — | 启动每回合 GitHub MCP server 的命令（必填） |
-| `mcp.args` | — | server 参数；请显式包含 `--tools=...`（必填） |
+| `mcp.args` | — | server 参数；请显式包含 `--tools=...`（强烈建议；守卫会过滤未列出的工具） |
 | `mcp.env` | `{}` | 额外的 MCP server 环境变量；GitHub 令牌自动注入 |
 | `mcp.cwd` | — | server 的可选工作目录 |
 
@@ -124,7 +137,7 @@ peer 依赖：`@deepseek-ai/cordis`（harness 的 Cordis 运行时）。
 
 首次接触某个 PR 时，runner 向 agent 注册表请求一个 Agent，其会话 id 由账户与 PR 派生（`github:<account>:<owner>:<repo>:pr:<number>`）：
 
-- 若该 PR 会话已存在于 `sessionPersistence`，则以相同的 setup 世界 **恢复（resume）**。
+- 若该 PR 会话已存在于 `sessionPersistence`，则以相同的 setup 世界 **恢复（resume）**（world = agent 创建时在其作用域上下文上注册的系统提示段与作用域工具的集合）。
 - 否则创建全新的 agent 与会话；会话 id 稳定，因此后续重启会恢复同一个 PR 对话。
 
 agent setup 在未发布的 agent 上下文上注册「评审世界」：一个 `complete` 系统提示段（按回合在评审/聊天提示之间切换）、四个被守卫的 GitHub 工具（作用域工具定义），以及一条把**所有全局工具**从该 agent 隐藏的工具限制——模型只能看到封闭的评审工具集，与 LingoBridge 的「仅守卫工具」handler 一致。会话日志就是持久的每 PR 历史——后续回合经主循环重放它，检查点/压缩与交互式会话完全相同。
@@ -133,7 +146,7 @@ agent setup 在未发布的 agent 上下文上注册「评审世界」：一个 
 
 1. 从基础仓库（base 分支，再 base SHA）或配置的默认值读取可信指令。
 2. 用全新的安装令牌与注入的 `GITHUB_HOST` 启动每回合 GitHub MCP server。
-3. 装配回合槽（PR、流程、指令、活动 host、守卫状态），用评审用户提示通过 `agent.followup` 唤醒 PR agent。
+3. 装配回合槽（turn slot = 每回合的可变上下文：当前 PR、流程、指令、活动 MCP host、守卫状态），用评审用户提示通过 `agent.followup` 唤醒 PR agent。
 4. 等待 `agent.whenIdle()`：主循环驱动模型步骤与工具调用；守卫工具在每次调用上执行评审规则。
 5. 将会话 flush 到持久化，仅当被守卫的 `submit_pending` 调用以 `event=COMMENT` 成功时才把该 PR 标记为 `reviewed`。
 
@@ -152,6 +165,9 @@ agent setup 在未发布的 agent 上下文上注册「评审世界」：一个 
 
 评审系统提示注册为 agent 的完整系统提示，只携带来自 base 仓库文件或配置默认值的可信指令。PR 元数据、标题/正文、diff、变更文件与工具输出都是不可信上下文；标题/正文在放入提示词前会清洗，提示词明确要求模型不遵循不可信上下文中的指令。
 
+- 评审会话日志（含 diff 与文件内容）会经 `sessionPersistence` 落盘；仓库含机密时，注意这些日志的存储位置。
+- `complete` 系统提示段只替换提示段，不抑制 harness 的 runtime contexts；若部署挂载了 workspace-context 类插件，非可信文本仍会进入模型输入。
+
 ## 开发
 
 ```sh
@@ -164,7 +180,7 @@ npm run build
 
 ## 已知限制与待办
 
-- 游标文件属于进程主机本地；同一账户跑两台主机仍会重复轮询。PR 会话经 harness 持久化，但评审*触发*状态没有（LingoBridge 把两者都放在其账户 store 中）。
+- 游标存在 harness 存储域中；当后端是单机 JSON 文件时，两台主机跑同一账户仍会重复轮询。PR 会话经 harness 持久化，但评审*触发*状态没有（LingoBridge 把两者都放在其账户 store 中）。
 - 插件要求完整的 agent-loop 部署（`agents` + `sessions`）；在没有它们的裸组合里不再激活。没有 `sessionPersistence` provider 时，PR 会话跨重启只是内存态。
 - PR 会话与交互式会话共用会话存储；在那里可见、可回放，但除了会话 id 之外没有标记它们是评审器会话。
 - GitHub API 限流会以错误形式呈现，下一轮询继续；除轮询间隔外没有退避。
