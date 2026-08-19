@@ -195,6 +195,66 @@ describe('plugin wiring through a real Cordis context', () => {
     expect(fiber.state).toBe(4)
   })
 
+  it('picks the first available review model from review.models', async () => {
+    const keyPath = await tempKeyPath()
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', { status: 200 })))
+    const ctx = new Context()
+    provideCoreServices(ctx)
+    ctx.provide('llm', {
+      listModels: async (provider: string) => {
+        if (provider === 'prov-a') return [{ id: 'model-a' }, { id: 'other' }]
+        throw new Error(`unknown provider ${provider}`)
+      },
+    })
+    const fiber = await ctx.plugin(plugin, validConfig(keyPath, {
+      review: { models: [{ provider: 'prov-a', model: 'model-a' }, { provider: 'prov-b', model: 'model-b' }] },
+    }))
+    await vi.waitFor(() => expect(fiber.state).toBe(2)) // FiberState.ACTIVE
+    await fiber.dispose()
+    expect(fiber.state).toBe(4)
+  })
+
+  it('falls back to the next candidate when the first provider is not mounted', async () => {
+    const keyPath = await tempKeyPath()
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', { status: 200 })))
+    const ctx = new Context()
+    provideCoreServices(ctx)
+    ctx.provide('llm', {
+      listModels: async (provider: string) => {
+        if (provider === 'prov-b') return [{ id: 'model-b' }]
+        throw new Error(`unknown provider ${provider}`)
+      },
+    })
+    const fiber = await ctx.plugin(plugin, validConfig(keyPath, {
+      review: { models: [{ provider: 'prov-a', model: 'model-a' }, { provider: 'prov-b', model: 'model-b' }] },
+    }))
+    await vi.waitFor(() => expect(fiber.state).toBe(2)) // FiberState.ACTIVE
+    await fiber.dispose()
+  })
+
+  it('fails activation when none of the review.models is available', async () => {
+    const keyPath = await tempKeyPath()
+    const ctx = new Context()
+    provideCoreServices(ctx)
+    ctx.provide('llm', {
+      listModels: async () => {
+        throw new Error('unknown provider')
+      },
+    })
+    await expect(ctx.plugin(plugin, validConfig(keyPath, {
+      review: { models: [{ provider: 'prov-a', model: 'model-a' }] },
+    }))).rejects.toThrow('none of the configured review.models is available')
+  })
+
+  it('fails activation when review.models is configured but the llm service is missing', async () => {
+    const keyPath = await tempKeyPath()
+    const ctx = new Context()
+    provideCoreServices(ctx)
+    await expect(ctx.plugin(plugin, validConfig(keyPath, {
+      review: { models: [{ provider: 'prov-a', model: 'model-a' }] },
+    }))).rejects.toThrow('does not mount the llm service')
+  })
+
   it('fails activation when a personal access token is mixed with App credentials', async () => {
     const keyPath = await tempKeyPath()
     const ctx = new Context()

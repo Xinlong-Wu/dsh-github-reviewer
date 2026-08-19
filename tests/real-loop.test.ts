@@ -38,7 +38,7 @@ const account: ResolvedAccountConfig = {
   repositories: ['owner/repo'],
   workspaceDir: '/tmp/ghr-workspace',
   workspaceTitle: 'GithubReviewer',
-  review: { maxToolCalls: 30, toolTimeoutMs: 5000, toolResultLimit: 60000, timeoutMs: 60_000, defaultInstructions: '' },
+  review: { maxToolCalls: 30, toolTimeoutMs: 5000, toolResultLimit: 60000, timeoutMs: 60_000, defaultInstructions: '', models: [] },
   mcp: { command: 'github-mcp-server', args: ['stdio'], env: {}, cwd: '' },
 }
 

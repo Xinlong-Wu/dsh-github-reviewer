@@ -95,6 +95,13 @@
       defaultInstructions: |
         Review this pull request for correctness, regressions, security issues,
         and missing tests. Leave concise inline comments where useful.
+      # Optional review-model candidates, in preference order. The first one
+      # whose provider is mounted and whose model exists in that provider's
+      # catalog wins; activation fails if none is available. Omit to use the
+      # deployment's default model selection (agentDefaultModel).
+      # models:
+      #   - { provider: deepseek-official, model: deepseek-v4-flash }
+      #   - { provider: ssct-openai, model: gpt-5.2 }
       # Optional. GitHub author_association values allowed to trigger /review
       # and /bot comments. ['*'] allows everyone; [] allows no one.
       commandAuthorAssociations: ['OWNER', 'MEMBER', 'COLLABORATOR']

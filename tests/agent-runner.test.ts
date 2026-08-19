@@ -35,7 +35,7 @@ const account: ResolvedAccountConfig = {
   repositories: ['owner/repo'],
   workspaceDir: '/tmp/ghr-workspace',
   workspaceTitle: 'GithubReviewer',
-  review: { maxToolCalls: 30, toolTimeoutMs: 5000, toolResultLimit: 60000, timeoutMs: 30_000, defaultInstructions: '' },
+  review: { maxToolCalls: 30, toolTimeoutMs: 5000, toolResultLimit: 60000, timeoutMs: 30_000, defaultInstructions: '', models: [] },
   mcp: { command: 'github-mcp-server', args: ['stdio'], env: {}, cwd: '' },
 }
 
@@ -146,6 +146,8 @@ interface MakeRunnerOptions {
   account?: ResolvedAccountConfig
   /** MCP host factory override; `null` disables the fake so the real StdioMcpHost.connect is used. */
   hostFactory?: ((token: string, signal: AbortSignal) => Promise<McpHost>) | null
+  /** Resolved model override from `review.models`. */
+  modelOverride?: { provider: string; model: string }
 }
 
 function makeRunner(world: World, sessionPersistence?: { listSnapshots: () => Promise<Array<{ header: { id: string } }>> }, options: MakeRunnerOptions = {}) {
@@ -158,6 +160,7 @@ function makeRunner(world: World, sessionPersistence?: { listSnapshots: () => Pr
       resume: world.resume,
     } as unknown as AgentRegistry,
     agentDefaultModel: { currentSelection: () => ({ provider: 'deepseek', model: 'deepseek-chat' }) },
+    ...options.modelOverride === undefined ? {} : { modelOverride: options.modelOverride },
     sessions: { flush: vi.fn(async () => true) } as unknown as SessionStore,
     ...sessionPersistence === undefined ? {} : { sessionPersistence: sessionPersistence as never },
     tokenSource: { token: async () => 'tok' },
@@ -200,6 +203,19 @@ describe('AgentRunner agent lifecycle', () => {
     expect((world.createOptions[0] as { agentOptions: unknown }).agentOptions).toEqual({ provider: 'deepseek', model: 'deepseek-chat' })
     await runner.dispose()
     expect(world.fakeHandle.handle.dispose).toHaveBeenCalledTimes(1)
+  })
+
+  it('uses the resolved model override instead of the deployment default', async () => {
+    const world = makeWorld()
+    const { runner } = makeRunner(world, undefined, { modelOverride: { provider: 'prov-a', model: 'model-a' } })
+    const signal = new AbortController().signal
+
+    const reviewPromise = runner.driveReview(pr, { text: 'trusted', source: 'x' }, signal)
+    world.fakeHandle.resolveTurn()
+    await reviewPromise
+
+    expect((world.createOptions[0] as { agentOptions: unknown }).agentOptions).toEqual({ provider: 'prov-a', model: 'model-a' })
+    await runner.dispose()
   })
 
   it('discovers the guarded tool schemas once and reuses them across PRs', async () => {

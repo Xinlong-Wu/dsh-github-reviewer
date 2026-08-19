@@ -31,6 +31,12 @@ export const DEFAULT_WORKSPACE_TITLE = 'GithubReviewer'
  */
 export const DEFAULT_COMMAND_AUTHOR_ASSOCIATIONS = ['OWNER', 'MEMBER', 'COLLABORATOR']
 
+/** One candidate model for review agents: provider route + exact model id. */
+export interface ReviewModel {
+  provider: string
+  model: string
+}
+
 /** Per-account review limits, fully resolved after normalization. */
 export interface ReviewConfig {
   maxToolCalls: number
@@ -44,6 +50,15 @@ export interface ReviewConfig {
    * commands. Defaults to maintainers; `['*']` allows anyone.
    */
   commandAuthorAssociations: string[]
+  /**
+   * Ordered review-model candidates, `{provider, model}` pairs. When non-empty,
+   * the plugin picks the first candidate whose provider is mounted and whose
+   * model appears in that provider's catalog, and uses it for every review
+   * agent instead of the deployment's default model selection. A load error is
+   * thrown when none of the candidates is available. Empty means "use the
+   * deployment default" (`agentDefaultModel`).
+   */
+  models: ReviewModel[]
 }
 
 /** Per-review GitHub MCP server spawn parameters, fully resolved after normalization. */
@@ -104,6 +119,11 @@ export interface ResolvedAccountConfig {
   mcp: McpConfig
 }
 
+const ReviewModelEntry = z.object({
+  provider: z.string().default(''),
+  model: z.string().default(''),
+})
+
 const Review = z.object({
   maxToolCalls: z.number().min(1).default(DEFAULT_MAX_TOOL_CALLS),
   toolTimeoutMs: z.number().min(1).default(DEFAULT_TOOL_TIMEOUT_MS),
@@ -111,6 +131,7 @@ const Review = z.object({
   timeoutMs: z.number().min(1).default(DEFAULT_REVIEW_TIMEOUT_MS),
   defaultInstructions: z.string().default(''),
   commandAuthorAssociations: z.array(z.string()).default([...DEFAULT_COMMAND_AUTHOR_ASSOCIATIONS]),
+  models: z.array(ReviewModelEntry).default([]),
 })
 
 const Mcp = z.object({
@@ -185,6 +206,9 @@ export function normalizeAccountConfig(account: Config): ResolvedAccountConfig {
       commandAuthorAssociations: (account.review?.commandAuthorAssociations ?? DEFAULT_COMMAND_AUTHOR_ASSOCIATIONS)
         .map(value => value.trim().toUpperCase())
         .filter(value => value !== ''),
+      models: (account.review?.models ?? [])
+        .map(model => ({ provider: model.provider.trim(), model: model.model.trim() }))
+        .filter(model => model.provider !== '' && model.model !== ''),
     },
     mcp: {
       command: (account.mcp?.command ?? '').trim(),

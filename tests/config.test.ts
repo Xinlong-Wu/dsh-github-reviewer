@@ -36,6 +36,7 @@ describe('normalizeAccountConfig', () => {
       timeoutMs: DEFAULT_REVIEW_TIMEOUT_MS,
       defaultInstructions: '',
       commandAuthorAssociations: ['OWNER', 'MEMBER', 'COLLABORATOR'],
+      models: [],
     })
     expect(normalized.mcp).toEqual({ command: '', args: [], env: {}, cwd: '' })
   })
@@ -167,5 +168,23 @@ describe('validateAccountRuntime', () => {
     } as AccountConfig)
     expect(normalized.workspaceDir).toBe('/var/lib/ghr')
     expect(normalized.workspaceTitle).toBe('GH Reviews')
+  })
+
+  it('normalizes review.models: trims, keeps provider+model pairs, drops blanks', () => {
+    const normalized = normalizeAccountConfig({
+      ...base,
+      review: {
+        models: [
+          { provider: ' deepseek-official ', model: ' deepseek-v4-flash ' },
+          { provider: '', model: 'x' },
+          { provider: 'ssct-openai', model: '' },
+          { provider: 'ssct-openai', model: 'gpt-5.2' },
+        ],
+      },
+    } as AccountConfig)
+    expect(normalized.review.models).toEqual([
+      { provider: 'deepseek-official', model: 'deepseek-v4-flash' },
+      { provider: 'ssct-openai', model: 'gpt-5.2' },
+    ])
   })
 })
