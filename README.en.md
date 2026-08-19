@@ -67,7 +67,16 @@ Peer dependencies: every `@deepseek-ai/*` package the plugin touches — `@deeps
 
 ### Enabling on a running DSH instance
 
-Assume the instance profile lives at `$DSH_HOME/profiles/web` (`DSH_HOME` defaults to `~/.dsh`) and the composition already includes the storage chain and the agent loop (bundled with the official `dsh-base` + `dsh-web-app`).
+Assume the instance profile lives at `$DSH_HOME/profiles/web` (`DSH_HOME` defaults to `~/.dsh`).
+
+The plugin is loaded through the harness **profile composition**: the composed tree is the official bundle layer (`dsh-base`, `dsh-web-app`, declared in the profile's `dsh.profile.bundles`), then your `cordis.patch.yml`, then any `--patch` overlays from the launcher. A standard web profile already provides every service the plugin needs — **nothing extra to mount**:
+
+| Service the plugin needs | Provided by | Where |
+|---|---|---|
+| `agents` / `sessions` | `@deepseek-ai/dsh-agent` / `dsh-session` | dsh-base bundle |
+| `agentDefaultModel` | `@deepseek-ai/dsh-agent-default-model` (model chosen in `settings.yaml`) | dsh-base bundle |
+| `sessionPersistence` | `@deepseek-ai/dsh-session-persistence-jsonl` | dsh-base bundle |
+| `storageDomain` (cursor) | `@deepseek-ai/dsh-storage-domain` + `dsh-storage-json` backend | dsh-web-app bundle |
 
 **1. Install the GitHub MCP server** (the official Go server; its tool names match the guard):
 
@@ -83,46 +92,61 @@ A container works too (`ghcr.io/github/github-mcp-server`); see the commented `m
 **2. Install the plugin into the profile**:
 
 ```sh
+# Official way: the dsh CLI forwards to pnpm inside the profile directory
+dsh plugin --profile web add @xinlongwu/dsh-github-reviewer
+
+# Equivalent manual way:
 cd "$DSH_HOME/profiles/web"
-# Add to dependencies in package.json:
-#   "@xinlongwu/dsh-github-reviewer": "^0.1.0-rc2"
-# The profile's pnpm-workspace.yaml sets autoInstallPeers: false, so pnpm
-# installs only the plugin plus @modelcontextprotocol/sdk and zod — every
-# @deepseek-ai/* peer resolves from the harness installation, keeping a
-# single copy of each package in the process.
-npx pnpm install
+npx pnpm add @xinlongwu/dsh-github-reviewer
 ls node_modules/@xinlongwu/dsh-github-reviewer/lib/index.js   # confirm the install
 ```
 
-**3. Add the plugin row to `$DSH_HOME/profiles/web/cordis.patch.yml`**:
+The profile's `pnpm-workspace.yaml` sets `autoInstallPeers: false`, so pnpm installs only the plugin plus its real dependencies (`@modelcontextprotocol/sdk`, `zod`); every `@deepseek-ai/*` peer resolves from the harness installation, keeping a single copy of each package in the process (see the peer-dependency note above).
+
+**3. Declare the plugin in `$DSH_HOME/profiles/web/cordis.patch.yml`**.
+
+Mind the patch syntax: a **plain row at the top level is an id-targeted override** of a row that already exists in the composed tree (if the id is missing you get `patch: entry "<id>" not found`); **a new plugin row must be wrapped in an `- insert:` list**:
 
 ```yaml
-- id: github-reviewer
-  name: '@xinlongwu/dsh-github-reviewer'
-  config:
-    name: personal
-    # Either the GitHub App triple (appId/installationId/privateKeyPath)
-    # or a personal access token:
-    personalAccessToken: 'github_pat_...'
-    repositories:
-      - 'owner/repo'
-    mcp:
-      command: 'github-mcp-server'
-      args: ['stdio', '--tools=pull_request_read,get_file_contents,pull_request_review_write,add_comment_to_pending_review']
-      # Container variant:
-      # command: 'docker'
-      # args: ['run', '-i', '--rm', '-e', 'GITHUB_PERSONAL_ACCESS_TOKEN', '-e', 'GITHUB_HOST',
-      #        'ghcr.io/github/github-mcp-server', 'stdio',
-      #        '--tools=pull_request_read,get_file_contents,pull_request_review_write,add_comment_to_pending_review']
+- insert:
+    - id: github-reviewer
+      name: '@xinlongwu/dsh-github-reviewer'
+      config:
+        name: personal
+        # Either the GitHub App triple (appId/installationId/privateKeyPath)
+        # or a personal access token. Avoid a literal token in this file —
+        # read it from the environment with a !!js expression instead:
+        # personalAccessToken: !!js process.env.GITHUB_PAT
+        personalAccessToken: 'github_pat_...'
+        repositories:
+          - 'owner/repo'
+        mcp:
+          command: 'github-mcp-server'
+          args: ['stdio', '--tools=pull_request_read,get_file_contents,pull_request_review_write,add_comment_to_pending_review']
+          # Container variant (-e takes the variable name only; the plugin
+          # injects the value into the process env and docker forwards it):
+          # command: 'docker'
+          # args: ['run', '-i', '--rm', '-e', 'GITHUB_PERSONAL_ACCESS_TOKEN', '-e', 'GITHUB_HOST',
+          #        'ghcr.io/github/github-mcp-server', 'stdio',
+          #        '--tools=pull_request_read,get_file_contents,pull_request_review_write,add_comment_to_pending_review']
 ```
+
+Multiple accounts = another instance with the same `name` inside the same `- insert:` list (different `id`), each running its own poll loop.
 
 **4. Create a PAT** (PAT mode): GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens, scoped to the target repository only, with permissions: Contents: Read, Pull requests: Read & Write, Issues: Read & Write, Checks: Read (Metadata is implicit).
 
-**5. Restart the instance and verify**: the startup log should show `starting github account=personal repos=1`; open PRs receive a COMMENT review within one poll interval, and commenting `/bot <question>` on a PR talks to the reviewer.
+**5. Restart the instance and verify**:
+
+```sh
+dsh web
+dsh --profile web --dump-config   # print the composed plugin tree; confirm the github-reviewer row
+```
+
+The startup log should show `starting github account=personal repos=1`; open PRs receive a COMMENT review within one poll interval, and commenting `/bot <question>` on a PR talks to the reviewer. If `--dump-config` reports `patch: entry "..." not found`, the row was treated as an override of an existing id — check that it is wrapped in `- insert:`.
 
 ## Configuration
 
-Mount the plugin in the harness `cordis.yml`, **one plugin instance per account** (flat config, multi-instance pattern):
+Mount the plugin with `- insert:` in the profile's `cordis.patch.yml` (see "Enabling on a running DSH instance" above), **one plugin instance per account** (flat config, multi-instance pattern). A single instance's full config fields:
 
 ```yaml
 - id: github-reviewer-org
