@@ -43,7 +43,7 @@
 ## 安装
 
 ```sh
-npm install @xinlong/dsh-github-reviewer
+npm install @xinlongwu/dsh-github-reviewer
 ```
 
 peer 依赖：`@deepseek-ai/cordis`（harness 的 Cordis 运行时）。
@@ -54,7 +54,7 @@ peer 依赖：`@deepseek-ai/cordis`（harness 的 Cordis 运行时）。
 
 ```yaml
 - id: github-reviewer-org
-  name: '@xinlong/dsh-github-reviewer'
+  name: '@xinlongwu/dsh-github-reviewer'
   config:
     name: org                             # 账户标签：日志与游标记录键
     appId: '123456'

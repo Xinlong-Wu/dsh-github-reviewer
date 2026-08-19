@@ -8,7 +8,7 @@
  * The deployment must mount the agent-loop family (`agents`, `sessions`, and
  * — for restart-safe per-PR sessions — a `sessionPersistence` provider);
  * see README for the required composition rows.
- * @module @xinlong/dsh-github-reviewer
+ * @module @xinlongwu/dsh-github-reviewer
  */
 
 import type { Context } from '@deepseek-ai/cordis'
