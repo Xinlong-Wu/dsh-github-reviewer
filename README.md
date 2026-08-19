@@ -142,6 +142,8 @@ dsh --profile web --dump-config   # 打印组合后的完整插件树，确认 g
 
 启动日志应出现 `starting github account=personal repos=1`；开放 PR 会在下一个轮询周期收到 COMMENT 评审，PR 下评论 `/bot <问题>` 可与评审器对话。`--dump-config` 若报 `patch: entry "..." not found`，说明该行被当作「覆盖已有行」处理了——检查是否漏了 `- insert:` 包装。
 
+启用后，评审/对话会话会归入自动注册的 `GithubReviewer` 工作区（需要 `workspace` 服务，web profile 自带）；可用 `workspaceDir` / `workspaceTitle` 调整。已存在的旧会话仍留在原工作区，只有新会话使用新目录。
+
 ## 配置
 
 在 profile 的 `cordis.patch.yml` 中以 `- insert:` 挂载插件（见上文「在运行中的 DSH 实例上启用」），**每个账户一个插件实例**（扁平配置、多实例模式）。以下是单个实例的完整配置字段：
@@ -193,16 +195,32 @@ dsh --profile web --dump-config   # 打印组合后的完整插件树，确认 g
 | `webUrl` | `https://github.com` | GitHub web URL 及 MCP 的 `GITHUB_HOST` 值 |
 | `pollIntervalMs` | `120000` | PR 轮询间隔 |
 | `repositories` | — | `owner/repo` 形式的仓库白名单；至少一个（必填） |
+| `workspaceDir` | `$DSH_HOME/github-reviewer/<name>` | 评审/对话会话目录；挂载 `workspace` 服务（web profile 自带）时注册为 harness 工作区，PR 会话归入该工作区而非"未分组" |
+| `workspaceTitle` | `GithubReviewer` | 上述工作区的显示标题 |
 | `review.maxToolCalls` | `30` | 单次评审回合的工具调用预算；超限被守卫拒绝 |
 | `review.toolTimeoutMs` | `30000` | 单次工具调用超时 |
 | `review.toolResultLimit` | `60000` | 每次调用返回给模型的最大工具结果字符数 |
 | `review.timeoutMs` | `900000` | 单回合总截止时间；超时后取消 agent |
 | `review.defaultInstructions` | — | 仅当基础仓库缺少 `.github/review_instructions.md` 时使用的兜底指令 |
 | `review.commandAuthorAssociations` | `['OWNER','MEMBER','COLLABORATOR']` | 允许触发 `/review`、`/bot` 命令的评论作者身份（GitHub `author_association` 值，大小写不敏感）；`['*']` 允许所有人，空数组禁止所有人 |
+| `review.models` | `[]`（用部署默认模型） | 评审模型的候选列表 `[{provider, model}]`。**判断发生在首次创建 PR 会话时**（不在插件挂载时报错）：取第一个「provider 已注册且模型在该 provider 目录中」的候选；全部不可用时本次评审终止、游标记录失败（退避后重试）。「可用」= 目录判定（`llm.listModels`），不做真实连接探测。留空则用部署的 `agentDefaultModel` |
 | `mcp.command` | — | 启动每回合 GitHub MCP server 的命令（必填） |
 | `mcp.args` | — | server 参数；请显式包含 `--tools=...`（强烈建议；守卫会过滤未列出的工具） |
 | `mcp.env` | `{}` | 额外的 MCP server 环境变量；GitHub 令牌自动注入 |
 | `mcp.cwd` | — | server 的可选工作目录 |
+
+### MCP server 环境变量自动注入
+
+插件在启动**每个回合**的 MCP server 时自动注入两个环境变量——**不需要、也不应该**在 `mcp.args` 或 `mcp.env` 里自己传：
+
+| 变量 | 值 | 说明 |
+|---|---|---|
+| `GITHUB_PERSONAL_ACCESS_TOKEN` | 当前回合生效的令牌：PAT 模式为 `personalAccessToken`；App 模式为每回合现铸造的安装令牌 | 在 `mcp.env` 合并之后写入，覆盖同名条目 |
+| `GITHUB_HOST` | `webUrl`（默认 `https://github.com`） | 同上 |
+
+- **二进制方式**：server 进程直接拿到这两个变量，无需任何配置。
+- **容器方式（docker）**：用 `-e GITHUB_PERSONAL_ACCESS_TOKEN`、`-e GITHUB_HOST`（**只写变量名**），让 docker 从进程环境继承——不要用 `-e NAME=值` 硬编码：token 会进入 docker 命令行（`ps` / `docker inspect` 可见），而且 App 模式的安装令牌是运行时铸造的，配置加载时根本不存在。
+- 想改 `GITHUB_HOST` 默认值，配置 `webUrl` 即可，不必在 args 里传。
 
 ### 在配置文件里写 JS 表达式（`!!js`）
 
@@ -239,8 +257,9 @@ patch 文件（`cordis.patch.yml`、`--patch` 覆盖层、bundle）里的配置�
 
 - 新 PR 或 `head.sha` 变化 → 执行评审。
 - 已评审或 `missing_instructions` 且 SHA 未变化 → 轮询评论中的 `/review` 与 `/bot` 命令。
+- 处于 `reviewing` 状态 → 上次评审被中断（进程崩溃/被杀）：重新触发评审，agent 从持久化的同一 PR 会话恢复，继续完成剩余部分；失败尝试带退避，不会空转。
 
-游标状态存放在 harness 的存储域中（`dsh_github_reviewer` 域、`accounts` 表、每账户一条记录），由部署路由到的后端持久化——挂 `dsh-storage-json` 时是 JSON 文件，挂 `dsh-storage-sqlite` 时就是真正的 SQLite 数据库。
+游标状态存放在 harness 的存储域中（`dsh_github_reviewer` 域、`accounts` 表、每账户一条记录），由部署路由到的后端持久化——挂 `dsh-storage-json` 时是 JSON 文件，挂 `dsh-storage-sqlite` 时就是真正的 SQLite 数据库。每个 PR 的 `status` 取值：`reviewed`（已提交 COMMENT 评审）、`missing_instructions`（无可信指令，head 变化才重试）、`reviewing`（评审进行中/被中断，下次轮询续跑）。
 
 ### 每 PR 的 Agent 与会话
 
@@ -249,13 +268,15 @@ patch 文件（`cordis.patch.yml`、`--patch` 覆盖层、bundle）里的配置�
 - 若该 PR 会话已存在于 `sessionPersistence`，则以相同的 setup 世界 **恢复（resume）**（world = agent 创建时在其作用域上下文上注册的系统提示段与作用域工具的集合）。
 - 否则创建全新的 agent 与会话；会话 id 稳定，因此后续重启会恢复同一个 PR 对话。
 
+挂载了 `session-title` 服务（web profile 自带）时，会话标题统一钉为 `Review <owner>/<repo> PR <number>`（如 `Review Xinlong-Wu/dsh-github-reviewer PR 18`），自动标题生成不会覆盖它。
+
 agent setup 在未发布的 agent 上下文上注册「评审世界」：一个 `complete` 系统提示段（按回合在评审/聊天提示之间切换）、四个被守卫的 GitHub 工具（作用域工具定义），以及一条把**所有全局工具**从该 agent 隐藏的工具限制——模型只能看到封闭的评审工具集，与 LingoBridge 的「仅守卫工具」handler 一致。会话日志就是持久的每 PR 历史——后续回合经主循环重放它，检查点/压缩与交互式会话完全相同。
 
 ### 评审流程
 
 1. 从基础仓库（base 分支，再 base SHA）或配置的默认值读取可信指令。
-2. 用全新的安装令牌与注入的 `GITHUB_HOST` 启动每回合 GitHub MCP server。
-3. 装配回合槽（turn slot = 每回合的可变上下文：当前 PR、流程、指令、活动 MCP host、守卫状态），用评审用户提示通过 `agent.followup` 唤醒 PR agent。
+2. 用全新的安装令牌与注入的 `GITHUB_HOST` 启动每回合 GitHub MCP server。工具 schema 每进程发现一次并缓存（不依赖 PR 或令牌），一堆新 PR 出现时不会重复连接。
+3. 装配回合槽（turn slot = 每回合的可变上下文：当前 PR、流程、指令、活动 MCP host、守卫状态），用评审用户提示通过 `agent.followup` 唤醒 PR agent。用户提示携带结构化 PR 元数据（仓库/编号/标题/URL/base/head）与 diff 规模（`size: N files (+X/-Y)`，来自列表响应，模型据此选择 `get_diff` 还是分页 `get_files`）；正文截断至 8k 字符并标注 `[truncated, use pull_request_read method=get]`——需要全文时模型自己再读。
 4. 等待 `agent.whenIdle()`：主循环驱动模型步骤与工具调用；守卫工具在每次调用上执行评审规则。
 5. 将会话 flush 到持久化，仅当被守卫的 `submit_pending` 调用以 `event=COMMENT` 成功时才把该 PR 标记为 `reviewed`。
 

@@ -8,6 +8,9 @@ const pr: PullRequest = {
   body: 'Closes #1',
   htmlUrl: 'https://github.com/owner/repo/pull/42',
   draft: false,
+  changedFiles: 5,
+  additions: 120,
+  deletions: 30,
   head: { sha: 'head-sha-123456', ref: 'feature/fix', repo: { owner: 'forker', name: 'repo' } },
   base: { sha: 'base-sha-123456', ref: 'main', repo: { owner: 'owner', name: 'repo' } },
 }
@@ -47,8 +50,20 @@ describe('buildReviewUserPrompt', () => {
     expect(prompt).toContain('head: feature/fix @ head-sha-123456')
   })
 
+  it('reports the diff size so the model can pick a reading strategy', () => {
+    expect(buildReviewUserPrompt(pr)).toContain('size: 5 files (+120/-30)')
+  })
+
   it('includes the body when present', () => {
     expect(buildReviewUserPrompt(pr)).toContain('<pull_request_body>\nCloses #1\n</pull_request_body>')
+  })
+
+  it('truncates an oversized body and points at method=get', () => {
+    const huge: PullRequest = { ...pr, body: 'x'.repeat(20_000) }
+    const prompt = buildReviewUserPrompt(huge)
+    expect(prompt).not.toContain('x'.repeat(20_000))
+    expect(prompt).toContain('...[body truncated; use pull_request_read method=get for the full body]')
+    expect(prompt.length).toBeLessThan(8_500)
   })
 
   it('sanitizes the title', () => {

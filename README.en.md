@@ -144,6 +144,8 @@ dsh --profile web --dump-config   # print the composed plugin tree; confirm the 
 
 The startup log should show `starting github account=personal repos=1`; open PRs receive a COMMENT review within one poll interval, and commenting `/bot <question>` on a PR talks to the reviewer. If `--dump-config` reports `patch: entry "..." not found`, the row was treated as an override of an existing id — check that it is wrapped in `- insert:`.
 
+Once enabled, review/chat sessions are filed under an auto-registered `GithubReviewer` workspace (requires the `workspace` service, bundled with the web profile); adjust with `workspaceDir` / `workspaceTitle`. Pre-existing sessions stay in their old workspace; only new sessions use the new directory.
+
 ## Configuration
 
 Mount the plugin with `- insert:` in the profile's `cordis.patch.yml` (see "Enabling on a running DSH instance" above), **one plugin instance per account** (flat config, multi-instance pattern). A single instance's full config fields:
@@ -196,16 +198,32 @@ Multiple accounts = another plugin instance with the same `name`, each running i
 | `webUrl` | `https://github.com` | GitHub web URL and MCP `GITHUB_HOST` value |
 | `pollIntervalMs` | `120000` | Interval between PR polling passes |
 | `repositories` | — | Repository allowlist in `owner/repo` form; at least one is required |
+| `workspaceDir` | `$DSH_HOME/github-reviewer/<name>` | Review/chat session directory; registered as a harness workspace (when the `workspace` service is mounted, as in the web profile) so PR sessions group there instead of the ungrouped bucket |
+| `workspaceTitle` | `GithubReviewer` | Display title of that workspace |
 | `review.maxToolCalls` | `30` | Tool-call budget for one review turn; the guard rejects further calls |
 | `review.toolTimeoutMs` | `30000` | Per-tool-call timeout |
 | `review.toolResultLimit` | `60000` | Maximum tool-result characters returned to the model per call |
 | `review.timeoutMs` | `900000` | Overall deadline for one turn; the agent is cancelled past it |
 | `review.defaultInstructions` | — | Fallback instructions used only when `.github/review_instructions.md` is missing from the base repository |
 | `review.commandAuthorAssociations` | `['OWNER','MEMBER','COLLABORATOR']` | GitHub `author_association` values allowed to trigger `/review` and `/bot` commands (case-insensitive); `['*']` allows everyone, an empty array allows no one |
+| `review.models` | `[]` (use the deployment default) | Ordered review-model candidates `[{provider, model}]`. **Resolved at the first session creation**, not at plugin mount: the first candidate whose provider is registered and whose model appears in that provider's catalog wins; when none is available that review is aborted and the failure is recorded in the cursor (retried after backoff). "Available" is a catalog check (`llm.listModels`), not a live connection probe. Empty uses the deployment's `agentDefaultModel` |
 | `mcp.command` | — | Command used to start the per-turn GitHub MCP server (required) |
 | `mcp.args` | — | Arguments for the server; include explicit `--tools=...` (strongly recommended; the guard filters out tools not listed) |
 | `mcp.env` | `{}` | Extra MCP server environment variables; GitHub tokens are injected automatically |
 | `mcp.cwd` | — | Optional working directory for the server |
+
+### Automatic MCP server environment injection
+
+The plugin injects two environment variables into **every per-turn** MCP server it spawns — **there is no need (and no reason) to pass them yourself** in `mcp.args` or `mcp.env`:
+
+| Variable | Value | Notes |
+|---|---|---|
+| `GITHUB_PERSONAL_ACCESS_TOKEN` | The effective token for this turn: your `personalAccessToken` in PAT mode; a freshly minted installation token per turn in App mode | Written after the `mcp.env` merge, so it overrides same-named entries |
+| `GITHUB_HOST` | `webUrl` (default `https://github.com`) | Same |
+
+- **Binary servers** receive both variables directly — no configuration needed.
+- **Container (docker)**: use `-e GITHUB_PERSONAL_ACCESS_TOKEN` / `-e GITHUB_HOST` (**name only**) so docker inherits them from the process environment — do not hardcode `-e NAME=value`: the token would land in the docker argv (visible in `ps` / `docker inspect`), and App-mode installation tokens are minted at runtime, so they do not exist at config load.
+- To change the `GITHUB_HOST` default, set `webUrl` instead of passing it in the args.
 
 ### JS expressions in the config file (`!!js`)
 
@@ -242,8 +260,9 @@ Each account runs its own poll loop (an immediate pass, then every `pollInterval
 
 - New PR or changed `head.sha` → run a review.
 - Reviewed or `missing_instructions` PR with an unchanged SHA → poll comments for `/review` and `/bot` commands.
+- A PR in the `reviewing` state → the last review was interrupted (process crash/kill): the next tick re-runs the review, resuming the PR's persisted session to finish the remaining work; failed attempts back off instead of spinning.
 
-Cursor state lives in the harness storage domain (`dsh_github_reviewer` domain, `accounts` table, one record per account), persisted by whichever backend the deployment routes to the domain — JSON files with `dsh-storage-json`, or a real SQLite database with `dsh-storage-sqlite`.
+Cursor state lives in the harness storage domain (`dsh_github_reviewer` domain, `accounts` table, one record per account), persisted by whichever backend the deployment routes to the domain — JSON files with `dsh-storage-json`, or a real SQLite database with `dsh-storage-sqlite`. Each PR's `status` is one of `reviewed` (COMMENT review submitted), `missing_instructions` (no trusted instructions; retried only on head change), or `reviewing` (review in flight/interrupted; resumed on the next poll).
 
 ### Per-PR agent and session
 
@@ -252,13 +271,15 @@ On first contact with a PR, the runner asks the agent registry for an Agent whos
 - If the PR session already exists in `sessionPersistence`, it is **resumed** with the same setup world (world = the system-prompt sections and scoped tools registered on an agent's scope context at creation).
 - Otherwise a fresh agent and session are created; the session id is stable, so a later restart resumes the same PR conversation.
 
+When the `session-title` service is mounted (bundled with the web profile), each session title is pinned to `Review <owner>/<repo> PR <number>` (e.g. `Review Xinlong-Wu/dsh-github-reviewer PR 18`); automatic title generation never overrides it.
+
 The agent setup registers the review world on the unpublished agent context: a `complete` system-prompt section (the review or chat prompt, selected per turn), the four guarded GitHub tools as scoped tool definitions, and a tool restriction that hides **every global tool** from this agent — the model sees only the closed review tool set, mirroring LingoBridge's guarded-only handler. The session log is the durable per-PR history — later turns replay it through the loop, and checkpoints/compaction apply exactly as for interactive sessions.
 
 ### Review flow
 
 1. Read trusted instructions from the base repository (base branch, then base SHA) or the configured default.
-2. Spawn the per-turn GitHub MCP server with a fresh installation token and `GITHUB_HOST` injected.
-3. Arm the turn slot (turn slot = the per-turn mutable context: current PR, flow, instructions, live MCP host, guard state) and wake the PR agent with the review user prompt via `agent.followup`.
+2. Spawn the per-turn GitHub MCP server with a fresh installation token and `GITHUB_HOST` injected. Tool schemas are discovered once per process and cached (they depend on neither the PR nor the token), so a burst of new PRs does not reconnect repeatedly.
+3. Arm the turn slot (turn slot = the per-turn mutable context: current PR, flow, instructions, live MCP host, guard state) and wake the PR agent with the review user prompt via `agent.followup`. The user prompt carries structured PR metadata (repository/number/title/URL/base/head) plus the diff size (`size: N files (+X/-Y)`, from the list payload — the model picks `get_diff` vs paginated `get_files` accordingly); the body is truncated at 8k characters and marked `[truncated, use pull_request_read method=get]` — the model reads the full body itself when needed.
 4. Await `agent.whenIdle()`: the loop drives model steps and tool calls; the guarded tools enforce the review rules on every call.
 5. Flush the session to persistence and mark the PR `reviewed` only when the guarded `submit_pending` call with `event=COMMENT` succeeded.
 

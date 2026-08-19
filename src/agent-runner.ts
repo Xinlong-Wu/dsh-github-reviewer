@@ -23,6 +23,7 @@ import type { TurnSlot } from './github/guard.ts'
 import { StdioMcpHost } from './github/mcp-host.ts'
 import type { McpHost, RawMcpTool } from './github/mcp-host.ts'
 import type { PullRequest, ReviewInstructions } from './github/model.ts'
+import { fullName } from './github/model.ts'
 import { buildChatSystemPrompt, buildReviewSystemPrompt, buildReviewUserPrompt } from './github/prompts.ts'
 import type { PollLogger } from './logger.ts'
 
@@ -34,6 +35,24 @@ export interface AgentRunnerDeps {
   sessions: SessionStore
   /** Deployment-owned default model selection; every review agent uses it. */
   agentDefaultModel: { currentSelection(): ModelSelection }
+  /**
+   * Optional `llm` service (mounted by the base bundle). Needed only when
+   * `review.models` is configured: the first available candidate is resolved
+   * at session creation, not at plugin mount, so a bad list never blocks boot.
+   */
+  llm?: {
+    /** Models advertised by one registered provider route, in catalog order. */
+    listModels(provider: string): Promise<Array<{ id: string }>>
+  }
+  /**
+   * Optional harness session-title service; when mounted, every PR session is
+   * renamed to a uniform `Review <owner>/<repo> PR <number>` title (pinned, so
+   * automatic generation never overrides it).
+   */
+  sessionTitle?: {
+    get(session: { id: string; events: readonly unknown[] }): { title?: string } | undefined
+    rename(session: { id: string; events: readonly unknown[] }, title: string): unknown
+  }
   /** Durable session storage; absent in compositions without a persistence provider. */
   sessionPersistence?: SessionPersistence
   tokenSource: TokenSource
@@ -141,6 +160,7 @@ export class AgentRunner {
     try {
       const handle = await this.ensureAgent(pr, signal)
       agent = handle.agent
+      this.renameSession(agent.session, pr)
       const token = await this.deps.tokenSource.token(signal)
       host = await this.connectHost(token, signal)
       firstSeq = agent.session.seq
@@ -162,6 +182,23 @@ export class AgentRunner {
     return { submitted: state.submittedComment, text }
   }
 
+  /**
+   * Pin a uniform session title for one PR, once. The title is user-sourced
+   * through the session-title service, so automatic generation never replaces
+   * it; already-titled sessions (e.g. resumed from persistence) are skipped.
+   */
+  private renameSession(session: { id: string; events: readonly unknown[] }, pr: PullRequest): void {
+    const service = this.deps.sessionTitle
+    if (service === undefined) return
+    const title = `Review ${fullName(pr.base.repo)} PR ${pr.number}`
+    try {
+      if (service.get(session)?.title === title) return
+      service.rename(session, title)
+    } catch (error) {
+      this.deps.logger.warn(`github review session title rename failed: ${String(error)}`)
+    }
+  }
+
   /** Return the live handle for a PR, creating or resuming its agent once. */
   private async ensureAgent(pr: PullRequest, signal: AbortSignal): Promise<AgentHandle> {
     const key = sessionKey(this.deps.accountName, pr)
@@ -170,7 +207,7 @@ export class AgentRunner {
 
     const toolSchemas = await this.fetchToolSchemas(signal)
     const sessionId = SessionId(key)
-    const selection = this.deps.agentDefaultModel.currentSelection()
+    const selection = await this.resolveModel()
     const agentOptions = { provider: selection.provider, model: selection.model }
     const setup = (agentCtx: Context): void => {
       // The review world is a closed tool set, like LingoBridge's guarded-only
@@ -209,7 +246,7 @@ export class AgentRunner {
         ? await this.deps.agents.resume({ resumeSessionId: sessionId, agentOptions, setup, signal })
         : await this.deps.agents.create({
           sessionId,
-          meta: { cwd: process.cwd() },
+          meta: { cwd: this.deps.account.workspaceDir },
           agentOptions,
           setup,
           signal,
@@ -217,7 +254,7 @@ export class AgentRunner {
     } else {
       handle = await this.deps.agents.create({
         sessionId,
-        meta: { cwd: process.cwd() },
+        meta: { cwd: this.deps.account.workspaceDir },
         agentOptions,
         setup,
         signal,
@@ -227,8 +264,27 @@ export class AgentRunner {
     return handle
   }
 
-  /** Discover the guarded tool schemas once, for registration at agent setup. */
+  /**
+   * Discover the guarded tool schemas once per process, then reuse them for
+   * every PR: the schema depends only on the MCP server (command + args), not
+   * on the PR or the token. A failed discovery clears the cache so the next
+   * PR retries it.
+   */
+  private toolSchemas: Promise<RawMcpTool[]> | undefined
+
   private async fetchToolSchemas(signal: AbortSignal): Promise<RawMcpTool[]> {
+    if (this.toolSchemas !== undefined) return this.toolSchemas
+    const promise = this.discoverToolSchemas(signal)
+    this.toolSchemas = promise
+    try {
+      return await promise
+    } catch (error) {
+      this.toolSchemas = undefined
+      throw error
+    }
+  }
+
+  private async discoverToolSchemas(signal: AbortSignal): Promise<RawMcpTool[]> {
     const token = await this.deps.tokenSource.token(signal)
     const host = await this.connectHost(token, signal)
     try {
@@ -236,6 +292,60 @@ export class AgentRunner {
     } finally {
       await host.close()
     }
+  }
+
+  /**
+   * Resolve the review model once per process, at the first session creation:
+   * the first `review.models` candidate whose provider is mounted and whose
+   * model appears in that provider's catalog wins. A successful resolution is
+   * cached; a failure is not, so a later attempt re-checks (and the poller's
+   * failure backoff keeps retries apart). With an empty list the deployment
+   * default selection is returned.
+   * @returns the provider/model pair for review agents.
+   * @throws when `review.models` is configured but no candidate is available,
+   * or the `llm` service is not mounted.
+   */
+  private modelSelection: Promise<{ provider: string; model: string }> | undefined
+
+  private resolveModel(): Promise<{ provider: string; model: string }> {
+    if (this.modelSelection !== undefined) return this.modelSelection
+    const promise = this.discoverModel().catch((error) => {
+      this.modelSelection = undefined
+      throw error
+    })
+    this.modelSelection = promise
+    return promise
+  }
+
+  private async discoverModel(): Promise<{ provider: string; model: string }> {
+    const candidates = this.deps.account.review.models
+    if (candidates.length === 0) {
+      const selection = this.deps.agentDefaultModel.currentSelection()
+      return { provider: selection.provider, model: selection.model }
+    }
+    const llm = this.deps.llm
+    if (llm === undefined) {
+      throw new Error(
+        `github-reviewer.${this.deps.accountName}: review.models is configured but the deployment does not mount the llm service`,
+      )
+    }
+    for (const candidate of candidates) {
+      try {
+        const models = await llm.listModels(candidate.provider)
+        if (models.some(model => model.id === candidate.model)) {
+          this.deps.logger.info(
+            `github reviewer model resolved account=${this.deps.accountName} provider=${candidate.provider} model=${candidate.model}`,
+          )
+          return { provider: candidate.provider, model: candidate.model }
+        }
+      } catch {
+        // Unregistered provider or adapter failure: try the next candidate.
+      }
+    }
+    throw new Error(
+      `github-reviewer.${this.deps.accountName}: none of the configured review.models is available; `
+      + `candidates: ${candidates.map(candidate => `${candidate.provider}/${candidate.model}`).join(', ')}`,
+    )
   }
 
   /** Connect the per-turn MCP server with token and host injected. */

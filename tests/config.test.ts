@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   DEFAULT_MAX_TOOL_CALLS,
   DEFAULT_REVIEW_TIMEOUT_MS,
@@ -19,6 +19,10 @@ const base: AccountConfig = {
   repositories: [' owner/repo '],
 }
 
+afterEach(() => {
+  vi.unstubAllEnvs()
+})
+
 describe('normalizeAccountConfig', () => {
   it('materializes review and mcp defaults when omitted and trims strings', () => {
     const normalized = normalizeAccountConfig(base)
@@ -32,6 +36,7 @@ describe('normalizeAccountConfig', () => {
       timeoutMs: DEFAULT_REVIEW_TIMEOUT_MS,
       defaultInstructions: '',
       commandAuthorAssociations: ['OWNER', 'MEMBER', 'COLLABORATOR'],
+      models: [],
     })
     expect(normalized.mcp).toEqual({ command: '', args: [], env: {}, cwd: '' })
   })
@@ -145,5 +150,41 @@ describe('validateAccountRuntime', () => {
     expect(normalized.baseUrl).toBe('')
     expect(normalized.webUrl).toBe('')
     expect(normalized.pollIntervalMs).toBe(base.pollIntervalMs)
+  })
+
+  it('defaults the workspace dir under $DSH_HOME and the title to GithubReviewer', () => {
+    vi.stubEnv('DSH_HOME', '/dsh')
+    const normalized = normalizeAccountConfig(base)
+    expect(normalized.workspaceDir).toBe('/dsh/github-reviewer/default')
+    expect(normalized.workspaceTitle).toBe('GithubReviewer')
+  })
+
+  it('keeps a configured workspace dir and title', () => {
+    const normalized = normalizeAccountConfig({
+      ...base,
+      name: 'org',
+      workspaceDir: ' /var/lib/ghr ',
+      workspaceTitle: ' GH Reviews ',
+    } as AccountConfig)
+    expect(normalized.workspaceDir).toBe('/var/lib/ghr')
+    expect(normalized.workspaceTitle).toBe('GH Reviews')
+  })
+
+  it('normalizes review.models: trims, keeps provider+model pairs, drops blanks', () => {
+    const normalized = normalizeAccountConfig({
+      ...base,
+      review: {
+        models: [
+          { provider: ' deepseek-official ', model: ' deepseek-v4-flash ' },
+          { provider: '', model: 'x' },
+          { provider: 'ssct-openai', model: '' },
+          { provider: 'ssct-openai', model: 'gpt-5.2' },
+        ],
+      },
+    } as AccountConfig)
+    expect(normalized.review.models).toEqual([
+      { provider: 'deepseek-official', model: 'deepseek-v4-flash' },
+      { provider: 'ssct-openai', model: 'gpt-5.2' },
+    ])
   })
 })

@@ -33,7 +33,9 @@ const account: ResolvedAccountConfig = {
   webUrl: 'https://github.com',
   pollIntervalMs: 120_000,
   repositories: ['owner/repo'],
-  review: { maxToolCalls: 30, toolTimeoutMs: 5000, toolResultLimit: 60000, timeoutMs: 30_000, defaultInstructions: '' },
+  workspaceDir: '/tmp/ghr-workspace',
+  workspaceTitle: 'GithubReviewer',
+  review: { maxToolCalls: 30, toolTimeoutMs: 5000, toolResultLimit: 60000, timeoutMs: 30_000, defaultInstructions: '', models: [] },
   mcp: { command: 'github-mcp-server', args: ['stdio'], env: {}, cwd: '' },
 }
 
@@ -144,6 +146,13 @@ interface MakeRunnerOptions {
   account?: ResolvedAccountConfig
   /** MCP host factory override; `null` disables the fake so the real StdioMcpHost.connect is used. */
   hostFactory?: ((token: string, signal: AbortSignal) => Promise<McpHost>) | null
+  /** `llm` service mock used by `review.models` resolution. */
+  llm?: { listModels(provider: string): Promise<Array<{ id: string }>> }
+  /** Session-title service mock. */
+  sessionTitle?: {
+    get: ReturnType<typeof vi.fn>
+    rename: ReturnType<typeof vi.fn>
+  }
 }
 
 function makeRunner(world: World, sessionPersistence?: { listSnapshots: () => Promise<Array<{ header: { id: string } }>> }, options: MakeRunnerOptions = {}) {
@@ -156,6 +165,8 @@ function makeRunner(world: World, sessionPersistence?: { listSnapshots: () => Pr
       resume: world.resume,
     } as unknown as AgentRegistry,
     agentDefaultModel: { currentSelection: () => ({ provider: 'deepseek', model: 'deepseek-chat' }) },
+    ...options.llm === undefined ? {} : { llm: options.llm },
+    ...options.sessionTitle === undefined ? {} : { sessionTitle: options.sessionTitle },
     sessions: { flush: vi.fn(async () => true) } as unknown as SessionStore,
     ...sessionPersistence === undefined ? {} : { sessionPersistence: sessionPersistence as never },
     tokenSource: { token: async () => 'tok' },
@@ -198,6 +209,99 @@ describe('AgentRunner agent lifecycle', () => {
     expect((world.createOptions[0] as { agentOptions: unknown }).agentOptions).toEqual({ provider: 'deepseek', model: 'deepseek-chat' })
     await runner.dispose()
     expect(world.fakeHandle.handle.dispose).toHaveBeenCalledTimes(1)
+  })
+
+  it('pins a uniform session title for each PR, once', async () => {
+    const world = makeWorld()
+    let titled = false
+    const get = vi.fn(() => (titled ? { title: 'Review owner/repo PR 42' } : undefined))
+    const rename = vi.fn((_session: unknown, _title: string) => { titled = true; return {} })
+    const { runner } = makeRunner(world, undefined, { sessionTitle: { get, rename } })
+    const signal = new AbortController().signal
+
+    const review1 = runner.driveReview(pr, { text: 'trusted', source: 'x' }, signal)
+    world.fakeHandle.resolveTurn()
+    await review1
+    const chat = runner.driveChat(pr, 'what changed?', signal)
+    world.fakeHandle.resolveTurn()
+    await chat
+
+    // Review turn pins the title; the chat turn on the same session skips it.
+    expect(rename).toHaveBeenCalledTimes(1)
+    expect(rename).toHaveBeenCalledWith(expect.anything(), 'Review owner/repo PR 42')
+    await runner.dispose()
+  })
+
+  it('resolves the first available review.model at session creation', async () => {
+    const world = makeWorld()
+    const llm = {
+      listModels: async (provider: string) => {
+        if (provider === 'prov-a') return [{ id: 'model-a' }, { id: 'other' }]
+        throw new Error(`unknown provider ${provider}`)
+      },
+    }
+    const { runner } = makeRunner(world, undefined, {
+      account: { ...account, review: { ...account.review, models: [{ provider: 'prov-a', model: 'model-a' }, { provider: 'prov-b', model: 'model-b' }] } },
+      llm,
+    })
+    const signal = new AbortController().signal
+
+    const reviewPromise = runner.driveReview(pr, { text: 'trusted', source: 'x' }, signal)
+    world.fakeHandle.resolveTurn()
+    await reviewPromise
+
+    expect((world.createOptions[0] as { agentOptions: unknown }).agentOptions).toEqual({ provider: 'prov-a', model: 'model-a' })
+    await runner.dispose()
+  })
+
+  it('aborts the review when none of the review.models is available', async () => {
+    const world = makeWorld()
+    const llm = { listModels: async () => { throw new Error('unknown provider') } }
+    const { runner } = makeRunner(world, undefined, {
+      account: { ...account, review: { ...account.review, models: [{ provider: 'prov-a', model: 'model-a' }] } },
+      llm,
+    })
+    const signal = new AbortController().signal
+
+    await expect(runner.driveReview(pr, { text: 'trusted', source: 'x' }, signal)).rejects.toThrow(
+      'none of the configured review.models is available',
+    )
+    expect(world.create).not.toHaveBeenCalled()
+    await runner.dispose()
+  })
+
+  it('aborts the review when review.models is configured but the llm service is missing', async () => {
+    const world = makeWorld()
+    const { runner } = makeRunner(world, undefined, {
+      account: { ...account, review: { ...account.review, models: [{ provider: 'prov-a', model: 'model-a' }] } },
+    })
+    const signal = new AbortController().signal
+
+    await expect(runner.driveReview(pr, { text: 'trusted', source: 'x' }, signal)).rejects.toThrow(
+      'does not mount the llm service',
+    )
+    expect(world.create).not.toHaveBeenCalled()
+    await runner.dispose()
+  })
+
+  it('discovers the guarded tool schemas once and reuses them across PRs', async () => {
+    const world = makeWorld()
+    const { runner, hosts } = makeRunner(world)
+    const signal = new AbortController().signal
+    const pr2 = { ...pr, number: 43 }
+
+    const review1 = runner.driveReview(pr, { text: 'trusted', source: 'x' }, signal)
+    world.fakeHandle.resolveTurn()
+    await review1
+    const review2 = runner.driveReview(pr2, { text: 'trusted', source: 'x' }, signal)
+    world.fakeHandle.resolveTurn()
+    await review2
+
+    expect(world.create).toHaveBeenCalledTimes(2)
+    // 1 schema-discovery host + 1 per-turn host per review; without the
+    // schema cache there would be a second discovery host (4 total).
+    expect(hosts).toHaveLength(3)
+    await runner.dispose()
   })
 
   it('resumes a persisted PR session instead of creating a fresh one', async () => {

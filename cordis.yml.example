@@ -78,6 +78,11 @@
     pollIntervalMs: 120000
     repositories:
       - 'owner/repo'
+    # Review sessions are filed under an auto-registered harness workspace
+    # (needs the `workspace` service; the web profile bundles it). Default
+    # directory: $DSH_HOME/github-reviewer/<name>, title: GithubReviewer.
+    # workspaceDir: '/var/lib/dsh/ghr'
+    # workspaceTitle: 'GithubReviewer'
     review:
       maxToolCalls: 30
       toolTimeoutMs: 30000
@@ -90,6 +95,15 @@
       defaultInstructions: |
         Review this pull request for correctness, regressions, security issues,
         and missing tests. Leave concise inline comments where useful.
+      # Optional review-model candidates, in preference order, resolved at the
+      # first session creation (not at mount). The first candidate whose
+      # provider is registered and whose model exists in that provider's
+      # catalog wins; if none is available that review is aborted and the
+      # failure is recorded in the cursor (backoff retry). Omit to use the
+      # deployment's default model selection (agentDefaultModel).
+      # models:
+      #   - { provider: deepseek-official, model: deepseek-v4-flash }
+      #   - { provider: ssct-openai, model: gpt-5.2 }
       # Optional. GitHub author_association values allowed to trigger /review
       # and /bot comments. ['*'] allows everyone; [] allows no one.
       commandAuthorAssociations: ['OWNER', 'MEMBER', 'COLLABORATOR']

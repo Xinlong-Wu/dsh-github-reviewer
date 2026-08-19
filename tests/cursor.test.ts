@@ -2,12 +2,14 @@ import { describe, expect, it } from 'vitest'
 import {
   CURSOR_STATUS_MISSING_INSTRUCTIONS,
   CURSOR_STATUS_REVIEWED,
+  CURSOR_STATUS_REVIEWING,
   MAX_REVIEW_FAILURE_BACKOFF_MS,
   commentCheckSince,
   cursorKey,
   markCommentCheck,
   markCursor,
   markReviewFailure,
+  markReviewing,
   reviewBackoffActive,
   shouldProcessCursor,
 } from '../src/github/cursor.ts'
@@ -22,6 +24,9 @@ function pr(number: number, headSha: string, repo = 'owner/repo'): PullRequest {
     body: '',
     htmlUrl: `https://github.com/${repo}/pull/${number}`,
     draft: false,
+    changedFiles: 3,
+    additions: 10,
+    deletions: 2,
     head: { sha: headSha, ref: 'feature', repo: { owner, name } },
     base: { sha: 'base-sha', ref: 'main', repo: { owner, name } },
   }
@@ -45,6 +50,27 @@ describe('cursor state', () => {
   it('skips missing-instructions PRs with an unchanged head SHA', () => {
     const state: CursorState = { prs: { 'owner/repo#1': { headSHA: 'aaa', status: CURSOR_STATUS_MISSING_INSTRUCTIONS } } }
     expect(shouldProcessCursor(state, pr(1, 'aaa'))).toBe(false)
+  })
+
+  it('re-reviews PRs left in the reviewing state (interrupted review)', () => {
+    const state: CursorState = { prs: { 'owner/repo#1': { headSHA: 'aaa', status: CURSOR_STATUS_REVIEWING } } }
+    expect(shouldProcessCursor(state, pr(1, 'aaa'))).toBe(true)
+  })
+
+  it('marks reviewing while preserving failure/backoff state', () => {
+    const state: CursorState = { prs: {} }
+    const now = new Date('2026-01-02T03:04:05.000Z')
+    markReviewing(state, pr(1, 'aaa'), now)
+    expect(state.prs[cursorKey(pr(1, 'aaa'))]).toEqual({
+      headSHA: 'aaa',
+      status: 'reviewing',
+      updatedAt: '2026-01-02T03:04:05.000Z',
+      lastCommentCheck: '2026-01-02T03:04:05.000Z',
+    })
+    // A failure against the same SHA escalates the backoff on top of reviewing.
+    markReviewFailure(state, pr(1, 'aaa'), new Date('2026-01-02T03:05:00.000Z'))
+    expect(state.prs[cursorKey(pr(1, 'aaa'))].status).toBe('reviewing')
+    expect(state.prs[cursorKey(pr(1, 'aaa'))].failCount).toBe(1)
   })
 
   it('marks and re-checks cursors', () => {
