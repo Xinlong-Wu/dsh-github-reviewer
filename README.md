@@ -271,8 +271,8 @@ agent setup 在未发布的 agent 上下文上注册「评审世界」：一个 
 ### 评审流程
 
 1. 从基础仓库（base 分支，再 base SHA）或配置的默认值读取可信指令。
-2. 用全新的安装令牌与注入的 `GITHUB_HOST` 启动每回合 GitHub MCP server。
-3. 装配回合槽（turn slot = 每回合的可变上下文：当前 PR、流程、指令、活动 MCP host、守卫状态），用评审用户提示通过 `agent.followup` 唤醒 PR agent。
+2. 用全新的安装令牌与注入的 `GITHUB_HOST` 启动每回合 GitHub MCP server。工具 schema 每进程发现一次并缓存（不依赖 PR 或令牌），一堆新 PR 出现时不会重复连接。
+3. 装配回合槽（turn slot = 每回合的可变上下文：当前 PR、流程、指令、活动 MCP host、守卫状态），用评审用户提示通过 `agent.followup` 唤醒 PR agent。用户提示携带结构化 PR 元数据（仓库/编号/标题/URL/base/head）与 diff 规模（`size: N files (+X/-Y)`，来自列表响应，模型据此选择 `get_diff` 还是分页 `get_files`）；正文截断至 8k 字符并标注 `[truncated, use pull_request_read method=get]`——需要全文时模型自己再读。
 4. 等待 `agent.whenIdle()`：主循环驱动模型步骤与工具调用；守卫工具在每次调用上执行评审规则。
 5. 将会话 flush 到持久化，仅当被守卫的 `submit_pending` 调用以 `event=COMMENT` 成功时才把该 PR 标记为 `reviewed`。
 

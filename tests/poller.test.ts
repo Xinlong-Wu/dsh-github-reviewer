@@ -14,6 +14,9 @@ const pr: PullRequest = {
   body: '',
   htmlUrl: 'u',
   draft: false,
+  changedFiles: 3,
+  additions: 10,
+  deletions: 2,
   head: { sha: 'head-sha', ref: 'feature', repo: { owner: 'forker', name: 'repo' } },
   base: { sha: 'base-sha', ref: 'main', repo: { owner: 'owner', name: 'repo' } },
 }
@@ -27,6 +30,8 @@ const account: ResolvedAccountConfig = {
   webUrl: 'https://github.com',
   pollIntervalMs: 120_000,
   repositories: ['owner/repo'],
+  workspaceDir: '/tmp/ghr-workspace',
+  workspaceTitle: 'GithubReviewer',
   review: {
     maxToolCalls: 30,
     toolTimeoutMs: 5000,

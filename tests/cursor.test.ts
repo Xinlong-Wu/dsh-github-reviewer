@@ -22,6 +22,9 @@ function pr(number: number, headSha: string, repo = 'owner/repo'): PullRequest {
     body: '',
     htmlUrl: `https://github.com/${repo}/pull/${number}`,
     draft: false,
+    changedFiles: 3,
+    additions: 10,
+    deletions: 2,
     head: { sha: headSha, ref: 'feature', repo: { owner, name } },
     base: { sha: 'base-sha', ref: 'main', repo: { owner, name } },
   }

@@ -87,6 +87,9 @@ interface RawPullRequest {
   draft?: unknown
   head?: RawPullRequestRef | null
   base?: RawPullRequestRef | null
+  changed_files?: unknown
+  additions?: unknown
+  deletions?: unknown
 }
 
 /** Raw issue comment JSON. */
@@ -140,6 +143,9 @@ function parseRawPullRequest(raw: RawPullRequest): PullRequest {
     draft: raw.draft === true,
     head: parseRawRef(raw.head),
     base: parseRawRef(raw.base),
+    changedFiles: asNumber(raw.changed_files),
+    additions: asNumber(raw.additions),
+    deletions: asNumber(raw.deletions),
   }
 }
 

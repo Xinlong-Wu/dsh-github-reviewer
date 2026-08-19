@@ -15,6 +15,9 @@ function prPayload(overrides: Record<string, unknown> = {}): Record<string, unkn
     body: 'body',
     html_url: 'https://github.com/owner/repo/pull/42',
     draft: false,
+    changed_files: 3,
+    additions: 10,
+    deletions: 2,
     head: { sha: 'head-sha', ref: 'feature', repo: { owner: 'forker', name: 'repo', full_name: 'forker/repo' } },
     base: { sha: 'base-sha', ref: 'main', repo: { owner: 'owner', name: 'repo', full_name: 'owner/repo' } },
     ...overrides,
@@ -33,6 +36,9 @@ describe('GitHubClient.listOpenPullRequests', () => {
     expect(prs[0]).toMatchObject({
       number: 1,
       title: 'Fix bug',
+      changedFiles: 3,
+      additions: 10,
+      deletions: 2,
       head: { sha: 'head-sha', ref: 'feature', repo: { owner: 'forker', name: 'repo' } },
       base: { sha: 'base-sha', ref: 'main', repo: { owner: 'owner', name: 'repo' } },
     })

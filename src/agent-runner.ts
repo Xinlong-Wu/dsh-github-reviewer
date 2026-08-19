@@ -227,8 +227,27 @@ export class AgentRunner {
     return handle
   }
 
-  /** Discover the guarded tool schemas once, for registration at agent setup. */
+  /**
+   * Discover the guarded tool schemas once per process, then reuse them for
+   * every PR: the schema depends only on the MCP server (command + args), not
+   * on the PR or the token. A failed discovery clears the cache so the next
+   * PR retries it.
+   */
+  private toolSchemas: Promise<RawMcpTool[]> | undefined
+
   private async fetchToolSchemas(signal: AbortSignal): Promise<RawMcpTool[]> {
+    if (this.toolSchemas !== undefined) return this.toolSchemas
+    const promise = this.discoverToolSchemas(signal)
+    this.toolSchemas = promise
+    try {
+      return await promise
+    } catch (error) {
+      this.toolSchemas = undefined
+      throw error
+    }
+  }
+
+  private async discoverToolSchemas(signal: AbortSignal): Promise<RawMcpTool[]> {
     const token = await this.deps.tokenSource.token(signal)
     const host = await this.connectHost(token, signal)
     try {
