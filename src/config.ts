@@ -1,7 +1,8 @@
 /**
  * Plugin configuration: one GitHub App review account per entry under
- * `accounts`. Ported from LingoBridge's `platforms.github` config with the
- * harness model route split into `provider` + `model`.
+ * `accounts`. Ported from LingoBridge's `platforms.github` config. The model
+ * route is not configured here — the deployment's default model selection
+ * (`ctx.agentDefaultModel`) drives every review agent.
  * @module
  */
 
@@ -45,8 +46,6 @@ export interface AccountConfig {
   webUrl: string
   pollIntervalMs: number
   repositories: string[]
-  provider: string
-  model: string
   /** Optional; defaults are materialized by {@link normalizeAccountConfig}. */
   review?: ReviewConfig
   /** Optional; the command and args are required for review operation. */
@@ -64,8 +63,6 @@ export interface ResolvedAccountConfig {
   webUrl: string
   pollIntervalMs: number
   repositories: string[]
-  provider: string
-  model: string
   review: ReviewConfig
   mcp: McpConfig
   statePath: string
@@ -99,8 +96,6 @@ const Account = z.object({
   webUrl: z.string().default(DEFAULT_WEB_URL),
   pollIntervalMs: z.number().min(1000).default(DEFAULT_POLL_INTERVAL_MS),
   repositories: z.array(z.string()).default([]),
-  provider: z.string().default('deepseek'),
-  model: z.string().default(''),
   review: Review,
   mcp: Mcp,
   statePath: z.string().default(''),
@@ -141,8 +136,6 @@ export function normalizeAccountConfig(account: AccountConfig): ResolvedAccountC
     webUrl: account.webUrl.trim().replace(/\/+$/, ''),
     pollIntervalMs: account.pollIntervalMs,
     repositories,
-    provider: account.provider.trim(),
-    model: account.model.trim(),
     review: {
       maxToolCalls: account.review?.maxToolCalls ?? DEFAULT_MAX_TOOL_CALLS,
       toolTimeoutMs: account.review?.toolTimeoutMs ?? DEFAULT_TOOL_TIMEOUT_MS,
@@ -178,8 +171,6 @@ export function validateAccountRuntime(name: string, account: ResolvedAccountCon
       throw new Error(`github-reviewer.accounts.${name}.repositories entry "${repo}" must be owner/repo`)
     }
   }
-  if (account.provider === '') throw new Error(`github-reviewer.accounts.${name}.provider is required`)
-  if (account.model === '') throw new Error(`github-reviewer.accounts.${name}.model is required`)
   if (account.mcp.command === '') throw new Error(`github-reviewer.accounts.${name}.mcp.command is required`)
   if (account.mcp.args.length === 0) throw new Error(`github-reviewer.accounts.${name}.mcp.args is required`)
 }

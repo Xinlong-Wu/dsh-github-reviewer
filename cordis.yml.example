@@ -9,7 +9,9 @@ plugins:
   # Any LLM adapter registering the provider route used below.
   llm-deepseek:
     $if: 'false' # placeholder: mount your own LLM adapter
-  # The agent loop + system-prompt assembly + tool pipeline.
+  # The agent loop + system-prompt assembly + tool pipeline. The deployment's
+  # default model selection (agentDefaultModel) drives every review agent; the
+  # plugin does not configure a model.
   # agent-spine-demo pre-creates one agent; any composition providing the
   # `agents` registry and `sessions` store works.
   # agent-spine:
@@ -35,9 +37,6 @@ plugins:
           pollIntervalMs: 120000
           repositories:
             - 'owner/repo'
-          # Harness LLM route used for this account's review agents.
-          provider: 'deepseek'
-          model: 'deepseek-chat'
           review:
             maxToolCalls: 30
             toolTimeoutMs: 30000

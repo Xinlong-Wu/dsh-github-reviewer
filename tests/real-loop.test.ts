@@ -32,8 +32,6 @@ const account: ResolvedAccountConfig = {
   webUrl: 'https://github.com',
   pollIntervalMs: 120_000,
   repositories: ['owner/repo'],
-  provider: 'deepseek',
-  model: 'deepseek-chat',
   review: { maxToolCalls: 30, toolTimeoutMs: 5000, toolResultLimit: 60000, timeoutMs: 60_000, defaultInstructions: '' },
   mcp: { command: 'github-mcp-server', args: ['stdio'], env: {}, cwd: '' },
   statePath: '',
@@ -146,6 +144,7 @@ describe('AgentRunner against the real harness agent loop', () => {
         account,
         agents: ctx.agents,
         sessions: ctx.sessions,
+        agentDefaultModel: { currentSelection: () => ({ provider: 'deepseek', model: 'deepseek-chat' }) },
         tokenSource: { token: async () => 'tok' },
         logger: silentLogger(),
         hostFactory: async () => ({
@@ -214,6 +213,7 @@ describe('AgentRunner against the real harness agent loop', () => {
         account,
         agents: ctx.agents,
         sessions: ctx.sessions,
+        agentDefaultModel: { currentSelection: () => ({ provider: 'deepseek', model: 'deepseek-chat' }) },
         tokenSource: { token: async () => 'tok' },
         logger: silentLogger(),
         hostFactory: async () => ({

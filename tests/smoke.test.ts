@@ -33,8 +33,6 @@ function validConfig(keyPath: string, overrides: Record<string, unknown> = {}): 
         webUrl: 'https://github.com',
         pollIntervalMs: 120000,
         repositories: ['owner/repo'],
-        provider: 'deepseek',
-        model: 'deepseek-chat',
         mcp: { command: 'github-mcp-server', args: ['stdio'], env: {}, cwd: '' },
         statePath: join(dir, 'cursor.json'),
         ...overrides,
@@ -52,12 +50,15 @@ function provideCoreServices(ctx: Context): void {
   ctx.provide('sessions', {
     flush: vi.fn(async () => true),
   })
+  ctx.provide('agentDefaultModel', {
+    currentSelection: () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
+  })
 }
 
 describe('plugin wiring through a real Cordis context', () => {
   it('declares its name, injects agents/sessions, and exports a Config schema', () => {
     expect(plugin.name).toBe('github-reviewer')
-    expect(plugin.inject).toEqual(['agents', 'sessions'])
+    expect(plugin.inject).toEqual(['agents', 'sessions', 'agentDefaultModel'])
     expect(plugin.Config).toBeDefined()
     expect(typeof plugin.apply).toBe('function')
   })

@@ -34,6 +34,7 @@ The plugin injects the harness `agents` and `sessions` services, so the deployme
   config: { root: './.sessions' }
 ```
 
+- **The model is not plugin-configured**: every review agent uses the deployment's default model selection (`agentDefaultModel`, provided by the agent-spine family, e.g. configured in `agent-spine-demo`'s `agents` entry).
 - **Without `sessionPersistence`**: the reviewer still works, but PR sessions are memory-only — after a restart the loop starts each PR from a fresh session.
 - **With `sessionPersistence`**: every turn is checkpointed, and the reviewer resumes the persisted PR session on restart (it never creates a second session for the same PR).
 - PR sessions live in the same session store as interactive sessions, so reviews are visible and replayable in the harness session UI.
@@ -64,8 +65,6 @@ plugins:
           pollIntervalMs: 120000                 # optional, default 2m
           repositories:
             - 'owner/repo'
-          provider: 'deepseek'                   # llm provider route
-          model: 'deepseek-chat'                 # model id
           review:                                # all optional
             maxToolCalls: 30
             toolTimeoutMs: 30000
@@ -97,8 +96,6 @@ Multiple accounts run independent poll loops.
 | `accounts.<name>.webUrl` | `https://github.com` | GitHub web URL and MCP `GITHUB_HOST` value |
 | `accounts.<name>.pollIntervalMs` | `120000` | Interval between PR polling passes |
 | `accounts.<name>.repositories` | — | Repository allowlist in `owner/repo` form; at least one is required |
-| `accounts.<name>.provider` | `deepseek` | Harness LLM provider route for this account's reviews |
-| `accounts.<name>.model` | — | Model id used for this account's reviews (required) |
 | `accounts.<name>.review.maxToolCalls` | `30` | Tool-call budget for one review turn; the guard rejects further calls |
 | `accounts.<name>.review.toolTimeoutMs` | `30000` | Per-tool-call timeout |
 | `accounts.<name>.review.toolResultLimit` | `60000` | Maximum tool-result characters returned to the model per call |
