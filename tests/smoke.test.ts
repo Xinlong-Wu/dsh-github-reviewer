@@ -167,6 +167,34 @@ describe('plugin wiring through a real Cordis context', () => {
     expect(fiber.state).toBe(4) // FiberState.DISPOSED (const enum, not usable as a runtime value)
   })
 
+  it('registers the review workspace when the workspace service is mounted', async () => {
+    const keyPath = await tempKeyPath()
+    const create = vi.fn(async () => ({}))
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', { status: 200 })))
+    const ctx = new Context()
+    provideCoreServices(ctx)
+    ctx.provide('workspace', { create })
+    const fiber = await ctx.plugin(plugin, validConfig(keyPath, { workspaceDir: join(dir, 'ws') }))
+    await vi.waitFor(() => expect(create).toHaveBeenCalled())
+    expect(create).toHaveBeenCalledWith(join(dir, 'ws'), 'GithubReviewer')
+    await fiber.dispose()
+    expect(fiber.state).toBe(4)
+  })
+
+  it('still activates when workspace registration fails', async () => {
+    const keyPath = await tempKeyPath()
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', { status: 200 })))
+    const ctx = new Context()
+    provideCoreServices(ctx)
+    ctx.provide('workspace', {
+      create: vi.fn(async () => { throw new Error('workspace backend unavailable') }),
+    })
+    const fiber = await ctx.plugin(plugin, validConfig(keyPath, { workspaceDir: join(dir, 'ws') }))
+    await vi.waitFor(() => expect(fiber.state).toBe(2)) // FiberState.ACTIVE
+    await fiber.dispose()
+    expect(fiber.state).toBe(4)
+  })
+
   it('fails activation when a personal access token is mixed with App credentials', async () => {
     const keyPath = await tempKeyPath()
     const ctx = new Context()

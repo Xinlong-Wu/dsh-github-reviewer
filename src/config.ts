@@ -8,6 +8,8 @@
  */
 
 import z from '@deepseek-ai/schemastery'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { parseRepository } from './github/model.ts'
 
 /** Defaults shared with LingoBridge. */
@@ -21,6 +23,8 @@ export const DEFAULT_TOOL_RESULT_LIMIT = 60_000
 export const DEFAULT_REVIEW_TIMEOUT_MS = 15 * 60_000
 /** Default account label when the instance config omits `name`. */
 export const DEFAULT_ACCOUNT_NAME = 'default'
+/** Default harness workspace title that review-agent sessions are filed under. */
+export const DEFAULT_WORKSPACE_TITLE = 'GithubReviewer'
 /**
  * Default `author_association` values allowed to trigger `/review` and `/bot`:
  * maintainers only, so strangers on public repos cannot drive LLM spend.
@@ -67,6 +71,16 @@ export interface Config {
   webUrl: string
   pollIntervalMs: number
   repositories: string[]
+  /**
+   * Directory that hosts this account's review-agent sessions. Registered as a
+   * harness workspace (titled {@link DEFAULT_WORKSPACE_TITLE}) when the
+   * deployment mounts the `workspace` service, so PR sessions group under that
+   * workspace instead of the ungrouped bucket. Defaults to
+   * `$DSH_HOME/github-reviewer/<name>`.
+   */
+  workspaceDir?: string
+  /** Display title of the harness workspace created for this account. */
+  workspaceTitle?: string
   /** Optional; defaults are materialized by {@link normalizeAccountConfig}. */
   review?: ReviewConfig
   /** Optional; the command and args are required for review operation. */
@@ -84,6 +98,8 @@ export interface ResolvedAccountConfig {
   webUrl: string
   pollIntervalMs: number
   repositories: string[]
+  workspaceDir: string
+  workspaceTitle: string
   review: ReviewConfig
   mcp: McpConfig
 }
@@ -115,6 +131,8 @@ export const Config = z.object({
   webUrl: z.string().default(DEFAULT_WEB_URL),
   pollIntervalMs: z.number().min(1000).default(DEFAULT_POLL_INTERVAL_MS),
   repositories: z.array(z.string()).default([]),
+  workspaceDir: z.string().default(''),
+  workspaceTitle: z.string().default(DEFAULT_WORKSPACE_TITLE),
   review: Review,
   mcp: Mcp,
 }) as unknown as z<Config>
@@ -156,6 +174,8 @@ export function normalizeAccountConfig(account: Config): ResolvedAccountConfig {
     webUrl: account.webUrl.trim().replace(/\/+$/, ''),
     pollIntervalMs: account.pollIntervalMs,
     repositories,
+    workspaceDir: resolveWorkspaceDir(account.workspaceDir?.trim() ?? '', name),
+    workspaceTitle: (account.workspaceTitle ?? DEFAULT_WORKSPACE_TITLE).trim() || DEFAULT_WORKSPACE_TITLE,
     review: {
       maxToolCalls: account.review?.maxToolCalls ?? DEFAULT_MAX_TOOL_CALLS,
       toolTimeoutMs: account.review?.toolTimeoutMs ?? DEFAULT_TOOL_TIMEOUT_MS,
@@ -173,6 +193,18 @@ export function normalizeAccountConfig(account: Config): ResolvedAccountConfig {
       cwd: (account.mcp?.cwd ?? '').trim(),
     },
   }
+}
+
+/**
+ * Resolve the directory hosting this account's review-agent sessions: the
+ * configured value when present, otherwise `$DSH_HOME/github-reviewer/<name>`.
+ * @param configured - the configured `workspaceDir`, already trimmed.
+ * @param name - resolved account name.
+ */
+function resolveWorkspaceDir(configured: string, name: string): string {
+  if (configured !== '') return configured
+  const home = process.env.DSH_HOME ?? join(homedir(), '.dsh')
+  return join(home, 'github-reviewer', name)
 }
 
 /**

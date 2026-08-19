@@ -78,6 +78,11 @@
     pollIntervalMs: 120000
     repositories:
       - 'owner/repo'
+    # Review sessions are filed under an auto-registered harness workspace
+    # (needs the `workspace` service; the web profile bundles it). Default
+    # directory: $DSH_HOME/github-reviewer/<name>, title: GithubReviewer.
+    # workspaceDir: '/var/lib/dsh/ghr'
+    # workspaceTitle: 'GithubReviewer'
     review:
       maxToolCalls: 30
       toolTimeoutMs: 30000

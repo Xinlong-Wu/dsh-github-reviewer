@@ -209,7 +209,7 @@ export class AgentRunner {
         ? await this.deps.agents.resume({ resumeSessionId: sessionId, agentOptions, setup, signal })
         : await this.deps.agents.create({
           sessionId,
-          meta: { cwd: process.cwd() },
+          meta: { cwd: this.deps.account.workspaceDir },
           agentOptions,
           setup,
           signal,
@@ -217,7 +217,7 @@ export class AgentRunner {
     } else {
       handle = await this.deps.agents.create({
         sessionId,
-        meta: { cwd: process.cwd() },
+        meta: { cwd: this.deps.account.workspaceDir },
         agentOptions,
         setup,
         signal,
