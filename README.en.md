@@ -144,6 +144,8 @@ dsh --profile web --dump-config   # print the composed plugin tree; confirm the 
 
 The startup log should show `starting github account=personal repos=1`; open PRs receive a COMMENT review within one poll interval, and commenting `/bot <question>` on a PR talks to the reviewer. If `--dump-config` reports `patch: entry "..." not found`, the row was treated as an override of an existing id — check that it is wrapped in `- insert:`.
 
+Once enabled, review/chat sessions are filed under an auto-registered `GithubReviewer` workspace (requires the `workspace` service, bundled with the web profile); adjust with `workspaceDir` / `workspaceTitle`. Pre-existing sessions stay in their old workspace; only new sessions use the new directory.
+
 ## Configuration
 
 Mount the plugin with `- insert:` in the profile's `cordis.patch.yml` (see "Enabling on a running DSH instance" above), **one plugin instance per account** (flat config, multi-instance pattern). A single instance's full config fields:
@@ -196,6 +198,8 @@ Multiple accounts = another plugin instance with the same `name`, each running i
 | `webUrl` | `https://github.com` | GitHub web URL and MCP `GITHUB_HOST` value |
 | `pollIntervalMs` | `120000` | Interval between PR polling passes |
 | `repositories` | — | Repository allowlist in `owner/repo` form; at least one is required |
+| `workspaceDir` | `$DSH_HOME/github-reviewer/<name>` | Review/chat session directory; registered as a harness workspace (when the `workspace` service is mounted, as in the web profile) so PR sessions group there instead of the ungrouped bucket |
+| `workspaceTitle` | `GithubReviewer` | Display title of that workspace |
 | `review.maxToolCalls` | `30` | Tool-call budget for one review turn; the guard rejects further calls |
 | `review.toolTimeoutMs` | `30000` | Per-tool-call timeout |
 | `review.toolResultLimit` | `60000` | Maximum tool-result characters returned to the model per call |

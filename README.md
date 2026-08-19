@@ -142,6 +142,8 @@ dsh --profile web --dump-config   # 打印组合后的完整插件树，确认 g
 
 启动日志应出现 `starting github account=personal repos=1`；开放 PR 会在下一个轮询周期收到 COMMENT 评审，PR 下评论 `/bot <问题>` 可与评审器对话。`--dump-config` 若报 `patch: entry "..." not found`，说明该行被当作「覆盖已有行」处理了——检查是否漏了 `- insert:` 包装。
 
+启用后，评审/对话会话会归入自动注册的 `GithubReviewer` 工作区（需要 `workspace` 服务，web profile 自带）；可用 `workspaceDir` / `workspaceTitle` 调整。已存在的旧会话仍留在原工作区，只有新会话使用新目录。
+
 ## 配置
 
 在 profile 的 `cordis.patch.yml` 中以 `- insert:` 挂载插件（见上文「在运行中的 DSH 实例上启用」），**每个账户一个插件实例**（扁平配置、多实例模式）。以下是单个实例的完整配置字段：
@@ -193,6 +195,8 @@ dsh --profile web --dump-config   # 打印组合后的完整插件树，确认 g
 | `webUrl` | `https://github.com` | GitHub web URL 及 MCP 的 `GITHUB_HOST` 值 |
 | `pollIntervalMs` | `120000` | PR 轮询间隔 |
 | `repositories` | — | `owner/repo` 形式的仓库白名单；至少一个（必填） |
+| `workspaceDir` | `$DSH_HOME/github-reviewer/<name>` | 评审/对话会话目录；挂载 `workspace` 服务（web profile 自带）时注册为 harness 工作区，PR 会话归入该工作区而非"未分组" |
+| `workspaceTitle` | `GithubReviewer` | 上述工作区的显示标题 |
 | `review.maxToolCalls` | `30` | 单次评审回合的工具调用预算；超限被守卫拒绝 |
 | `review.toolTimeoutMs` | `30000` | 单次工具调用超时 |
 | `review.toolResultLimit` | `60000` | 每次调用返回给模型的最大工具结果字符数 |

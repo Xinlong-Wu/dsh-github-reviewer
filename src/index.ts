@@ -12,6 +12,7 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
+import { mkdir } from 'node:fs/promises'
 import type {} from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-agent-default-model'
 import type {} from '@deepseek-ai/dsh-session'
@@ -80,6 +81,22 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
     await store.load()
 
     const logger = cordisLogger(ctx.logger)
+
+    // Register the account's review-session directory as a harness workspace
+    // when the deployment mounts the `workspace` service (the web profile
+    // does): review-agent sessions carry this directory as their cwd, so they
+    // group under the workspace title instead of the ungrouped bucket. This
+    // is best-effort — a registration failure only degrades session grouping.
+    const workspace = ctx.get('workspace')
+    if (workspace !== undefined) {
+      try {
+        await mkdir(account.workspaceDir, { recursive: true })
+        await workspace.create(account.workspaceDir, account.workspaceTitle)
+        logger.info(`registered github reviewer workspace title=${account.workspaceTitle} dir=${account.workspaceDir}`)
+      } catch (error) {
+        logger.warn(`github reviewer workspace registration failed: ${String(error)}`)
+      }
+    }
     ctx.effect(() => {
       // Read the optional persistence service inside the effect so the wiring
       // does not depend on plugin mount order at apply time.
