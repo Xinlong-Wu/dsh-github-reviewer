@@ -9,7 +9,7 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import type { AgentHandle, AgentRegistry } from '@deepseek-ai/dsh-agent'
+import type { AgentHandle, AgentRegistry, ModelSelection } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent, SessionStore } from '@deepseek-ai/dsh-session'
 import { SessionId } from '@deepseek-ai/dsh-session'
@@ -32,6 +32,8 @@ export interface AgentRunnerDeps {
   account: ResolvedAccountConfig
   agents: AgentRegistry
   sessions: SessionStore
+  /** Deployment-owned default model selection; every review agent uses it. */
+  agentDefaultModel: { currentSelection(): ModelSelection }
   /** Durable session storage; absent in compositions without a persistence provider. */
   sessionPersistence?: SessionPersistence
   tokenSource: TokenSource
@@ -162,7 +164,8 @@ export class AgentRunner {
 
     const toolSchemas = await this.fetchToolSchemas(signal)
     const sessionId = SessionId(key)
-    const agentOptions = { provider: this.deps.account.provider, model: this.deps.account.model }
+    const selection = this.deps.agentDefaultModel.currentSelection()
+    const agentOptions = { provider: selection.provider, model: selection.model }
     const setup = (agentCtx: Context): void => {
       // The review world is a closed tool set, like LingoBridge's guarded-only
       // handler: hide every global tool so the model can reach only the four

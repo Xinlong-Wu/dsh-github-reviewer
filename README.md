@@ -34,6 +34,7 @@
   config: { root: './.sessions' }
 ```
 
+- **模型不由插件配置**：每个评审 agent 使用部署的默认模型选择（`agentDefaultModel`，由 agent-spine 家族提供，例如在 `agent-spine-demo` 的 `agents` 条目中配置）。
 - **没有 `sessionPersistence`**：评审器仍可用，但 PR 会话只在内存中——重启后每个 PR 从全新会话开始。
 - **有 `sessionPersistence`**：每个回合都会被检查点化，重启后评审器恢复已持久化的 PR 会话（同一个 PR 不会创建第二个会话）。
 - PR 会话与交互式会话共用同一个会话存储，因此评审在 harness 会话界面里可见、可回放。
@@ -64,8 +65,6 @@ plugins:
           pollIntervalMs: 120000                 # 可选，默认 2 分钟
           repositories:
             - 'owner/repo'
-          provider: 'deepseek'                   # llm provider 路由
-          model: 'deepseek-chat'                 # 模型 id
           review:                                # 全部可选
             maxToolCalls: 30
             toolTimeoutMs: 30000
@@ -97,8 +96,6 @@ plugins:
 | `accounts.<name>.webUrl` | `https://github.com` | GitHub web URL 及 MCP 的 `GITHUB_HOST` 值 |
 | `accounts.<name>.pollIntervalMs` | `120000` | PR 轮询间隔 |
 | `accounts.<name>.repositories` | — | `owner/repo` 形式的仓库白名单；至少一个（必填） |
-| `accounts.<name>.provider` | `deepseek` | 该账户评审使用的 harness LLM provider 路由 |
-| `accounts.<name>.model` | — | 该账户评审使用的模型 id（必填） |
 | `accounts.<name>.review.maxToolCalls` | `30` | 单次评审回合的工具调用预算；超限被守卫拒绝 |
 | `accounts.<name>.review.toolTimeoutMs` | `30000` | 单次工具调用超时 |
 | `accounts.<name>.review.toolResultLimit` | `60000` | 每次调用返回给模型的最大工具结果字符数 |

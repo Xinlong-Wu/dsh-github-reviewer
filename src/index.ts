@@ -13,6 +13,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-agent'
+import type {} from '@deepseek-ai/dsh-agent-default-model'
 import type {} from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-session-persistence'
 import { AgentRunner } from './agent-runner.ts'
@@ -33,8 +34,8 @@ export type { ReviewDriver } from './poller.ts'
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'github-reviewer'
 
-/** Services required by this plugin: the agent registry and the session store. */
-export const inject = ['agents', 'sessions']
+/** Services required by this plugin: agent registry, session store, and the deployment-owned default model selection. */
+export const inject = ['agents', 'sessions', 'agentDefaultModel']
 
 /**
  * Start one poll loop per configured account. Each account's configuration
@@ -71,6 +72,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
         account,
         agents: ctx.agents,
         sessions: ctx.sessions,
+        agentDefaultModel: ctx.agentDefaultModel,
         ...sessionPersistence === undefined ? {} : { sessionPersistence },
         tokenSource,
         logger,

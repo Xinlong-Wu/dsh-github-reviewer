@@ -17,8 +17,6 @@ const base: AccountConfig = {
   webUrl: 'https://github.com/',
   pollIntervalMs: 5000,
   repositories: [' owner/repo '],
-  provider: ' deepseek ',
-  model: 'deepseek-chat',
   statePath: ' ./state.json ',
 }
 
@@ -94,8 +92,6 @@ describe('validateAccountRuntime', () => {
       [{ privateKeyPath: '' }, /privateKeyPath is required/],
       [{ repositories: [] }, /at least one owner\/repo/],
       [{ repositories: ['not-a-repo'] }, /must be owner\/repo/],
-      [{ provider: '' }, /provider is required/],
-      [{ model: '' }, /model is required/],
       [{ mcp: { command: '', args: ['x'], env: {}, cwd: '' } }, /mcp\.command is required/],
       [{ mcp: { command: 'x', args: [], env: {}, cwd: '' } }, /mcp\.args is required/],
     ]
