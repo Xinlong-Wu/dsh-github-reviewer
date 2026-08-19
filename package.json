@@ -21,6 +21,7 @@
   },
   "files": [
     "lib/**/*",
+    "docs/**/*",
     "cordis.yml.example"
   ],
   "scripts": {
