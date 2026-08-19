@@ -1,5 +1,5 @@
 {
-  "name": "@xinlong/dsh-github-reviewer",
+  "name": "@xinlongwu/dsh-github-reviewer",
   "description": "DeepSeek Harness plugin: automated GitHub PR review bot ported from LingoBridge",
   "version": "0.1.0-rc1",
   "publishConfig": {

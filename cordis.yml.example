@@ -4,7 +4,7 @@
 # whatever spine/LLM/persistence plugins your deployment already uses.
 #
 # Mount the plugin ONCE PER ACCOUNT (flat config, multi-instance pattern):
-# every entry below with `name: '@xinlong/dsh-github-reviewer'` runs one
+# every entry below with `name: '@xinlongwu/dsh-github-reviewer'` runs one
 # independent poll loop.
 
 - id: llm-deepseek          # any LLM adapter
@@ -33,7 +33,7 @@
     backend: json
 
 - id: github-reviewer-org
-  name: '@xinlong/dsh-github-reviewer'
+  name: '@xinlongwu/dsh-github-reviewer'
   config:
     # Account label used in logs and the default state file path.
     name: org
@@ -75,7 +75,7 @@
 
 # A second account is just another plugin instance with its own config.
 - id: github-reviewer-personal
-  name: '@xinlong/dsh-github-reviewer'
+  name: '@xinlongwu/dsh-github-reviewer'
   config:
     name: personal
     appId: '654321'
