@@ -88,26 +88,6 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
       const sessionPersistence = ctx.get('sessionPersistence')
       const sessionTitle = ctx.get('sessionTitle')
       const llm = ctx.get('llm')
-
-      // Before any PR session is created, make sure the review-session
-      // directory exists and — when the workspace service is available — the
-      // directory is registered as a harness workspace. Lazy reads inside the
-      // closure keep this free of the activation race.
-      const ensureWorkspace = async (): Promise<void> => {
-        try {
-          await mkdir(account.workspaceDir, { recursive: true })
-        } catch (error) {
-          logger.warn(`github reviewer workspace dir creation failed: ${String(error)}`)
-        }
-        const workspace = ctx.get('workspace')
-        if (workspace === undefined) return
-        try {
-          await workspace.create(account.workspaceDir, account.workspaceTitle)
-        } catch (error) {
-          logger.warn(`github reviewer workspace registration failed: ${String(error)}`)
-        }
-      }
-
       const runner = new AgentRunner({
         accountName: account.name,
         account,
@@ -117,7 +97,6 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
         ...llm === undefined ? {} : { llm },
         ...sessionTitle === undefined ? {} : { sessionTitle },
         ...sessionPersistence === undefined ? {} : { sessionPersistence },
-        ensureWorkspace,
         tokenSource,
         logger,
       })
@@ -134,44 +113,45 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
       activeAccounts.add(account.name)
       logger.info(`starting github account=${account.name} repos=${account.repositories.length} poll_interval_ms=${account.pollIntervalMs}`)
 
-      // Eager workspace registration: only when the composition actually
-      // declares the `workspace` service (checked via the loader, so the
-      // decision does not depend on activation order). The service can take
-      // tens of seconds to activate (it scans the session store during init),
-      // so a declared service is retried every 2s until it appears — no give
-      // up window, since the composition guarantees it is coming. An unknown
-      // presence (no loader, e.g. bare test contexts) keeps the current
-      // bounded retry as a fallback. Aborts on dispose.
-      const workspaceAbort = new AbortController()
-      const presence = workspacePresence(ctx)
-      if (presence !== 'not-declared') {
-        void (async () => {
-          const giveUpAt = presence === 'unknown' ? 300 : Number.POSITIVE_INFINITY
-          try {
-            await mkdir(account.workspaceDir, { recursive: true })
-          } catch (error) {
-            logger.warn(`github reviewer workspace dir creation failed: ${String(error)}`)
-          }
-          for (let attempt = 0; attempt < giveUpAt && !workspaceAbort.signal.aborted; attempt++) {
-            const workspace = ctx.get('workspace')
-            if (workspace !== undefined) {
-              try {
-                await workspace.create(account.workspaceDir, account.workspaceTitle)
-                logger.info(`registered github reviewer workspace title=${account.workspaceTitle} dir=${account.workspaceDir}`)
-              } catch (error) {
-                logger.warn(`github reviewer workspace registration failed: ${String(error)}`)
-              }
-              return
-            }
-            if (attempt === 0) logger.debug('workspace service not yet available; retrying registration')
-            await delay(2000, workspaceAbort.signal)
-          }
-          logger.debug('workspace service did not appear; review sessions stay ungrouped')
-        })()
-      }
+      // Workspace setup: when the composition declares the `workspace`
+      // service, mount a companion plugin that injects it. The inject system
+      // is the wait — the companion activates exactly when the workspace
+      // service becomes available (its init can take tens of seconds), then
+      // creates the review-session directory and registers it. No polling, no
+      // retry. Mounted unconditionally: in compositions without the workspace
+      // service it simply stays pending — a sub-plugin mounted via ctx.plugin
+      // is not a loader entry, so a pending companion can never block the boot
+      // audit, and it does nothing until the service exists.
+      void (async () => {
+        try {
+          await ctx.plugin({
+            name: `github-reviewer-workspace-${account.name}`,
+            inject: ['workspace'],
+            apply: (workspaceCtx: Context) => {
+              void (async () => {
+                try {
+                  await mkdir(account.workspaceDir, { recursive: true })
+                } catch (error) {
+                  logger.warn(`github reviewer workspace dir creation failed: ${String(error)}`)
+                }
+                try {
+                  const workspace = workspaceCtx.get('workspace') as { create(path: string, title: string): Promise<unknown> } | undefined
+                  if (workspace !== undefined) {
+                    await workspace.create(account.workspaceDir, account.workspaceTitle)
+                    logger.info(`registered github reviewer workspace title=${account.workspaceTitle} dir=${account.workspaceDir}`)
+                  }
+                } catch (error) {
+                  logger.warn(`github reviewer workspace registration failed: ${String(error)}`)
+                }
+              })()
+            },
+          })
+        } catch (error) {
+          logger.warn(`github reviewer workspace setup mount failed: ${String(error)}`)
+        }
+      })()
 
       return async () => {
-        workspaceAbort.abort()
         activeAccounts.delete(account.name)
         await poller.dispose()
         await domain.close()
@@ -183,38 +163,3 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
   }
 }
 
-/** Resolve after `ms` milliseconds, or immediately when the signal aborts. */
-function delay(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise<void>((resolve) => {
-    if (signal.aborted) return resolve()
-    const timer = setTimeout(() => {
-      signal.removeEventListener('abort', onAbort)
-      resolve()
-    }, ms)
-    const onAbort = () => {
-      clearTimeout(timer)
-      resolve()
-    }
-    signal.addEventListener('abort', onAbort)
-  })
-}
-
-/**
- * Whether the `workspace` service is part of the composition, decided from the
- * loader (which knows every entry before activation): `declared` when a
- * non-disabled entry provides it, `not-declared` when it is absent, and
- * `unknown` when the loader is not mounted (e.g. bare test contexts). This is
- * deterministic at activation time, unlike `ctx.get('workspace')`, which races
- * the service's slow init.
- */
-function workspacePresence(ctx: Context): 'declared' | 'not-declared' | 'unknown' {
-  const loader = ctx.get('loader')
-  if (loader === undefined) return 'unknown'
-  for (const entry of loader.entries()) {
-    if (entry.disabled) continue
-    if (entry.options.id === 'workspace' || entry.options.name === '@deepseek-ai/dsh-workspace') {
-      return 'declared'
-    }
-  }
-  return 'not-declared'
-}

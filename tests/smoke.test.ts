@@ -182,20 +182,23 @@ describe('plugin wiring through a real Cordis context', () => {
     expect(fiber.state).toBe(4)
   })
 
-  it('creates the workspace dir at activation and registers once the service appears late', async () => {
+  it('creates the workspace dir and registers when the workspace service appears', async () => {
     const keyPath = await tempKeyPath()
     vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', { status: 200 })))
     const ctx = new Context()
     provideCoreServices(ctx)
     const fiber = await ctx.plugin(plugin, validConfig(keyPath, { workspaceDir: join(dir, 'ws') }))
     await vi.waitFor(() => expect(fiber.state).toBe(2)) // FiberState.ACTIVE
-    // The directory is created unconditionally at activation, not at review time.
-    await vi.waitFor(async () => { await access(join(dir, 'ws')) })
-    // The workspace service arrives late (activation race): the retry registers it.
+    // No workspace service yet: the companion plugin stays pending, so neither
+    // the directory nor a registration exists.
+    await expect(access(join(dir, 'ws'))).rejects.toThrow()
+    // The workspace service arrives late: the companion activates (inject-based
+    // wait, no polling), creating the directory and registering.
     const create = vi.fn(async () => ({}))
-    setTimeout(() => ctx.provide('workspace', { create }), 100)
+    ctx.provide('workspace', { create })
     await vi.waitFor(() => expect(create).toHaveBeenCalled(), { timeout: 5000 })
     expect(create).toHaveBeenCalledWith(join(dir, 'ws'), 'GithubReviewer')
+    await vi.waitFor(async () => { await access(join(dir, 'ws')) })
     await fiber.dispose()
     expect(fiber.state).toBe(4)
   })
@@ -214,35 +217,15 @@ describe('plugin wiring through a real Cordis context', () => {
     expect(fiber.state).toBe(4)
   })
 
-  it('registers the workspace eagerly when the loader declares the workspace service', async () => {
-    const keyPath = await tempKeyPath()
-    const create = vi.fn(async () => ({}))
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', { status: 200 })))
-    const ctx = new Context()
-    provideCoreServices(ctx)
-    ctx.provide('loader', {
-      entries: () => [{ disabled: false, options: { id: 'workspace', name: '@deepseek-ai/dsh-workspace' } }],
-    })
-    ctx.provide('workspace', { create })
-    const fiber = await ctx.plugin(plugin, validConfig(keyPath, { workspaceDir: join(dir, 'ws') }))
-    await vi.waitFor(() => expect(create).toHaveBeenCalled())
-    expect(create).toHaveBeenCalledWith(join(dir, 'ws'), 'GithubReviewer')
-    await fiber.dispose()
-    expect(fiber.state).toBe(4)
-  })
-
-  it('skips the workspace dir and registration when the loader does not declare it', async () => {
+  it('does nothing to the workspace when the service is absent', async () => {
     const keyPath = await tempKeyPath()
     vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', { status: 200 })))
     const ctx = new Context()
     provideCoreServices(ctx)
-    ctx.provide('loader', {
-      entries: () => [{ disabled: false, options: { id: 'other', name: '@deepseek-ai/dsh-other' } }],
-    })
     const fiber = await ctx.plugin(plugin, validConfig(keyPath, { workspaceDir: join(dir, 'ws') }))
     await vi.waitFor(() => expect(fiber.state).toBe(2)) // FiberState.ACTIVE
-    // No eager mkdir, no registration, no retry: the dir appears only when a
-    // session is actually created (none here), and no workspace service exists.
+    // The companion stays pending without the service: no directory, no
+    // registration — and the reviewer itself is unaffected.
     await expect(access(join(dir, 'ws'))).rejects.toThrow()
     await fiber.dispose()
     expect(fiber.state).toBe(4)
