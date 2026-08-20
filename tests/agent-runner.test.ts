@@ -153,6 +153,8 @@ interface MakeRunnerOptions {
     get: ReturnType<typeof vi.fn>
     rename: ReturnType<typeof vi.fn>
   }
+  /** Notification after a fresh or resumed reviewer session is live. */
+  onSessionReady?: (sessionId: string) => void
 }
 
 function makeRunner(world: World, sessionPersistence?: { listSnapshots: () => Promise<Array<{ header: { id: string } }>> }, options: MakeRunnerOptions = {}) {
@@ -167,6 +169,7 @@ function makeRunner(world: World, sessionPersistence?: { listSnapshots: () => Pr
     agentDefaultModel: { currentSelection: () => ({ provider: 'deepseek', model: 'deepseek-chat' }) },
     ...options.llm === undefined ? {} : { llm: options.llm },
     ...options.sessionTitle === undefined ? {} : { sessionTitle: options.sessionTitle },
+    ...options.onSessionReady === undefined ? {} : { onSessionReady: options.onSessionReady },
     sessions: { flush: vi.fn(async () => true) } as unknown as SessionStore,
     ...sessionPersistence === undefined ? {} : { sessionPersistence: sessionPersistence as never },
     tokenSource: { token: async () => 'tok' },
@@ -191,7 +194,8 @@ function makeRunner(world: World, sessionPersistence?: { listSnapshots: () => Pr
 describe('AgentRunner agent lifecycle', () => {
   it('creates one agent per PR and reuses it across review and chat turns', async () => {
     const world = makeWorld()
-    const { runner } = makeRunner(world)
+    const onSessionReady = vi.fn()
+    const { runner } = makeRunner(world, undefined, { onSessionReady })
     const signal = new AbortController().signal
 
     const reviewPromise = runner.driveReview(pr, { text: 'trusted', source: 'x' }, signal)
@@ -205,7 +209,11 @@ describe('AgentRunner agent lifecycle', () => {
     expect(world.create).toHaveBeenCalledTimes(1)
     expect(world.resume).not.toHaveBeenCalled()
     expect(world.fakeHandle.agent.followup).toHaveBeenCalledTimes(2)
+    expect(onSessionReady).toHaveBeenCalledTimes(2)
+    expect(onSessionReady).toHaveBeenNthCalledWith(1, 'github:reviewer:owner:repo:pr:42')
+    expect(onSessionReady).toHaveBeenNthCalledWith(2, 'github:reviewer:owner:repo:pr:42')
     expect((world.createOptions[0] as { sessionId: string }).sessionId).toBe('github:reviewer:owner:repo:pr:42')
+    expect((world.createOptions[0] as { meta: { cwd: string } }).meta.cwd).toBe(account.workspaceDir)
     expect((world.createOptions[0] as { agentOptions: unknown }).agentOptions).toEqual({ provider: 'deepseek', model: 'deepseek-chat' })
     await runner.dispose()
     expect(world.fakeHandle.handle.dispose).toHaveBeenCalledTimes(1)
@@ -308,7 +316,8 @@ describe('AgentRunner agent lifecycle', () => {
     const world = makeWorld()
     const sessionId = 'github:reviewer:owner:repo:pr:42'
     const persistence = { listSnapshots: vi.fn(async () => [{ header: { id: sessionId } }]) }
-    const { runner } = makeRunner(world, persistence)
+    const onSessionReady = vi.fn()
+    const { runner } = makeRunner(world, persistence, { onSessionReady })
     const signal = new AbortController().signal
 
     const promise = runner.driveReview(pr, { text: 'trusted', source: 'x' }, signal)
@@ -317,6 +326,8 @@ describe('AgentRunner agent lifecycle', () => {
 
     expect(world.resume).toHaveBeenCalledTimes(1)
     expect(world.create).not.toHaveBeenCalled()
+    expect(onSessionReady).toHaveBeenCalledOnce()
+    expect(onSessionReady).toHaveBeenCalledWith(sessionId)
     expect((world.resumeOptions[0] as { resumeSessionId: string }).resumeSessionId).toBe(sessionId)
     await runner.dispose()
   })

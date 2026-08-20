@@ -85,6 +85,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
     ctx,
     logger,
     account => { workspace.request(account) },
+    (sessionId, workspaceDir) => { workspace.requestSession(sessionId, workspaceDir) },
   )
   let installed = false
 

@@ -55,6 +55,8 @@ export interface AgentRunnerDeps {
   }
   /** Durable session storage; absent in compositions without a persistence provider. */
   sessionPersistence?: SessionPersistence
+  /** Non-blocking notification after one reviewer session is live or resumed. */
+  onSessionReady?: (sessionId: SessionId) => void
   tokenSource: TokenSource
   logger: PollLogger
   /** Optional MCP host factory override, for tests. */
@@ -229,11 +231,14 @@ export class AgentRunner {
   /** Return the live handle for a PR, creating or resuming its agent once. */
   private async ensureAgent(pr: PullRequest, signal: AbortSignal): Promise<AgentHandle> {
     const key = sessionKey(this.deps.accountName, pr)
+    const sessionId = SessionId(key)
     const live = this.handles.get(key)
-    if (live !== undefined) return live
+    if (live !== undefined) {
+      this.deps.onSessionReady?.(sessionId)
+      return live
+    }
 
     const toolSchemas = await this.fetchToolSchemas(signal)
-    const sessionId = SessionId(key)
     const selection = await this.resolveModel()
     const agentOptions = { provider: selection.provider, model: selection.model }
     const setup = (agentCtx: Context): void => {
@@ -288,6 +293,7 @@ export class AgentRunner {
       })
     }
     this.handles.set(key, handle)
+    this.deps.onSessionReady?.(sessionId)
     return handle
   }
 
