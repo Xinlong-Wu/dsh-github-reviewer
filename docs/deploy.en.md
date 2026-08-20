@@ -85,16 +85,14 @@ ls node_modules/dsh-github-reviewer/lib/index.js   # confirm the install
 
 The profile's `pnpm-workspace.yaml` sets `autoInstallPeers: false`, so pnpm installs only the plugin plus its real dependencies (`@modelcontextprotocol/sdk`, `zod`); every `@deepseek-ai/*` peer resolves from the harness installation, keeping a single copy of each package in the process (see the peer-dependency note above).
 
-**3. Configure and enable the plugin in `$DSH_HOME/profiles/web/cordis.patch.yml`**.
+**3. Configure the plugin in `$DSH_HOME/profiles/web/cordis.patch.yml`**.
 
-The package declares `dsh.bundle`, so `dsh plugin` automatically adds it to the profile's bundle list. The bundle already registers a disabled `id: github-reviewer` instance; the profile patch only needs to override that id, not insert it again:
+The package declares `dsh.bundle`, so `dsh plugin` automatically adds it to the profile's bundle list. The bundle already registers an enabled `id: github-reviewer` instance with `uiSettings: true`; the profile patch only needs to complete its runtime config by id, without another insert or either repeated default. Complete authentication and MCP configuration before the next start or the instance fails activation loudly; `repositories` may remain empty, which only leaves the poller idle:
 
 ```yaml
 - id: github-reviewer
-  disabled: false
   config:
     name: personal
-    uiSettings: true
     # Either the GitHub App triple (appId/installationId/privateKeyPath)
     # or a personal access token. Avoid a literal token in this file —
     # read it from the environment with a !!js expression instead:
@@ -113,7 +111,7 @@ The package declares `dsh.bundle`, so `dsh plugin` automatically adds it to the 
       #        '--tools=pull_request_read,get_file_contents,pull_request_review_write,add_comment_to_pending_review']
 ```
 
-Multiple accounts = another instance with the same `name` inside the same `- insert:` list (different `id`), each running its own poll loop. Only the default row sets `uiSettings: true`; added accounts must keep it `false` and remain profile-managed.
+Multiple accounts = another instance with the same `name` inside the same `- insert:` list (different `id`), each running its own poll loop. Because `uiSettings` defaults to `true`, added accounts must explicitly set `uiSettings: false`; only the default instance may own the fixed Web settings namespace.
 
 When the Web profile supplies settings and the matching Client slot, the Settings page shows the GitHub reviewer card. These are optional injected companions: missing settings, workspace, or Client UI dependencies leave only that companion pending and do not block the Host reviewer. Saving the card asynchronously restarts only the reviewer's internal runtime, never the whole DSH process.
 

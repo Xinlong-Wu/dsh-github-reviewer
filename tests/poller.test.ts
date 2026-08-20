@@ -94,7 +94,7 @@ function fakeClient(): FakeClient {
     reviewComments: [],
     issueCommentCalls: [],
     reviewReplyCalls: [],
-    listOpenPullRequests: async () => c.prs,
+    listOpenPullRequests: vi.fn(async () => c.prs),
     reviewInstructions: async () => (c.instructions === 'missing' ? { ok: false } : { ok: true, instructions: c.instructions }),
     listIssueComments: async () => c.issueComments,
     listReviewComments: async () => c.reviewComments,
@@ -143,8 +143,9 @@ function buildPoller(
   lines: string[],
   instructions: { text: string; source: string } | 'missing' = 'missing',
   defaultInstructions = '',
+  repositories = account.repositories,
 ) {
-  const resolved = { ...account, review: { ...account.review, defaultInstructions } }
+  const resolved = { ...account, repositories, review: { ...account.review, defaultInstructions } }
   c.instructions = instructions
   return new AccountPoller({
     accountName: 'reviewer',
@@ -158,6 +159,18 @@ function buildPoller(
 }
 
 describe('AccountPoller review flow', () => {
+  it('stays idle without calling GitHub when no repositories are configured', async () => {
+    const c = fakeClient()
+    const { driver } = fakeDriver()
+    const poller = buildPoller(c, driver, [], 'missing', '', [])
+
+    await poller.pollOnce(signal)
+
+    expect(c.listOpenPullRequests).not.toHaveBeenCalled()
+    expect(driver.driveReview).not.toHaveBeenCalled()
+    await poller.dispose()
+  })
+
   it('reviews a new PR and marks the cursor reviewed', async () => {
     const c = fakeClient()
     c.prs = [pr]

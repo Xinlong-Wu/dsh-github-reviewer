@@ -61,10 +61,10 @@
   config:
     # Account label used in logs and the cursor record key in the storage domain.
     name: org
-    # Only one instance may own the fixed `github-reviewer` Web settings card.
+    # uiSettings defaults to true. Only this primary instance may own the fixed
+    # `github-reviewer` Web settings card; extra accounts below set it false.
     # The card manages repositories, workspace fields, and review limits; auth,
     # URLs, and MCP process settings remain composition-managed.
-    uiSettings: true
     # Required GitHub App identity. The App needs:
     #   - Pull requests: read/write (reviews and comments)
     #   - Contents: read (on the base repository, for
@@ -80,6 +80,8 @@
     baseUrl: 'https://api.github.com'
     webUrl: 'https://github.com'
     pollIntervalMs: 120000
+    # Optional. An empty list keeps the reviewer and settings UI active while
+    # polling no repositories.
     repositories:
       - 'owner/repo'
     # Review sessions are filed under an auto-registered harness workspace

@@ -76,7 +76,7 @@ export interface McpConfig {
 export interface Config {
   /** Account label used in logs and as the cursor record key; defaults to `default`. */
   name?: string
-  /** Register the optional Web settings namespace for this instance. Only one instance may enable it. */
+  /** Register the optional Web settings namespace; defaults to true. Extra instances must disable it. */
   uiSettings?: boolean
   appId: string
   installationId: string
@@ -159,7 +159,7 @@ const Mcp = z.object({
 /** Schemastery schema for one plugin instance (one account). */
 export const Config = z.object({
   name: z.string().default(DEFAULT_ACCOUNT_NAME),
-  uiSettings: z.boolean().default(false),
+  uiSettings: z.boolean().default(true),
   appId: z.string().default(''),
   installationId: z.string().default(''),
   privateKeyPath: z.string().default(''),
@@ -203,7 +203,7 @@ export function normalizeAccountConfig(account: Config): ResolvedAccountConfig {
   const args = (account.mcp?.args ?? []).map(value => value.trim()).filter(value => value !== '')
   return {
     name,
-    uiSettings: account.uiSettings ?? false,
+    uiSettings: account.uiSettings ?? true,
     appId: account.appId.trim(),
     installationId: account.installationId.trim(),
     privateKeyPath: account.privateKeyPath.trim(),
@@ -308,9 +308,6 @@ export function validateAccountRuntime(name: string, account: ResolvedAccountCon
     if (account.appId === '') throw new Error(`github-reviewer.${name}.appId is required`)
     if (account.installationId === '') throw new Error(`github-reviewer.${name}.installationId is required`)
     if (account.privateKeyPath === '') throw new Error(`github-reviewer.${name}.privateKeyPath is required`)
-  }
-  if (account.repositories.length === 0) {
-    throw new Error(`github-reviewer.${name}.repositories must include at least one owner/repo`)
   }
   for (const repo of account.repositories) {
     if (parseRepository(repo) === undefined) {

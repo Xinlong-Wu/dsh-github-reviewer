@@ -29,6 +29,7 @@ describe('normalizeAccountConfig', () => {
     expect(normalized.appId).toBe('123')
     expect(normalized.baseUrl).toBe('https://api.github.com')
     expect(normalized.webUrl).toBe('https://github.com')
+    expect(normalized.uiSettings).toBe(true)
     expect(normalized.review).toEqual({
       maxToolCalls: DEFAULT_MAX_TOOL_CALLS,
       toolTimeoutMs: DEFAULT_TOOL_TIMEOUT_MS,
@@ -39,6 +40,10 @@ describe('normalizeAccountConfig', () => {
       models: [],
     })
     expect(normalized.mcp).toEqual({ command: '', args: [], env: {}, cwd: '' })
+  })
+
+  it('keeps an explicit uiSettings opt-out for additional instances', () => {
+    expect(normalizeAccountConfig({ ...base, uiSettings: false }).uiSettings).toBe(false)
   })
 
   it('keeps partial review overrides and defaults the rest', () => {
@@ -123,11 +128,19 @@ describe('validateAccountRuntime', () => {
     expect(() => validateAccountRuntime('reviewer', normalized)).toThrow('mutually exclusive')
   })
 
+  it('accepts an empty repository list as an idle reviewer', () => {
+    const normalized = normalizeAccountConfig({
+      ...base,
+      repositories: [],
+      mcp: { command: 'x', args: ['y'], env: {}, cwd: '' },
+    } as AccountConfig)
+    expect(() => validateAccountRuntime('reviewer', normalized)).not.toThrow()
+  })
+
   it('rejects missing fields loudly', () => {
     const cases: Array<[Partial<AccountConfig>, RegExp]> = [
       [{ installationId: '' }, /installationId is required/],
       [{ privateKeyPath: '' }, /privateKeyPath is required/],
-      [{ repositories: [] }, /at least one owner\/repo/],
       [{ repositories: ['not-a-repo'] }, /must be owner\/repo/],
       [{ mcp: { command: '', args: ['x'], env: {}, cwd: '' } }, /mcp\.command is required/],
       [{ mcp: { command: 'x', args: [], env: {}, cwd: '' } }, /mcp\.args is required/],

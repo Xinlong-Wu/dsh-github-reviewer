@@ -85,16 +85,14 @@ ls node_modules/dsh-github-reviewer/lib/index.js   # 确认安装成功
 
 profile 的 `pnpm-workspace.yaml` 里 `autoInstallPeers: false`，pnpm 只会安装插件本身及其真实依赖（`@modelcontextprotocol/sdk`、`zod`）；所有 `@deepseek-ai/*` peer 都从 harness 安装目录解析，进程内每个包只有一份，不会出现副本崩溃（见上文 peer 依赖说明）。
 
-**3. 在 `$DSH_HOME/profiles/web/cordis.patch.yml` 里配置并启用插件**。
+**3. 在 `$DSH_HOME/profiles/web/cordis.patch.yml` 里配置插件**。
 
-安装包声明了 `dsh.bundle`，所以 `dsh plugin` 会自动把它加入 profile 的 bundle 列表。bundle 已注册一个 `id: github-reviewer` 的禁用实例；profile patch 只需按 id 覆盖它，无需再次 `insert`：
+安装包声明了 `dsh.bundle`，所以 `dsh plugin` 会自动把它加入 profile 的 bundle 列表。bundle 已注册一个默认启用、`uiSettings: true` 的 `id: github-reviewer` 实例；profile patch 只需按 id 补齐运行配置，无需再次 `insert`，也无需重复填写这两个默认值。必须在下一次启动前补齐认证和 MCP 配置，否则该实例会响亮地激活失败；`repositories` 可以暂时为空，空列表只会让 poller 保持空闲：
 
 ```yaml
 - id: github-reviewer
-  disabled: false
   config:
     name: personal
-    uiSettings: true
     # 二选一：GitHub App 三件套（appId/installationId/privateKeyPath）
     # 或个人访问令牌。避免在文件里写明文令牌，可用 !!js 表达式从环境变量读取：
     # personalAccessToken: !!js process.env.GITHUB_PAT
@@ -111,7 +109,7 @@ profile 的 `pnpm-workspace.yaml` 里 `autoInstallPeers: false`，pnpm 只会安
       #        '--tools=pull_request_read,get_file_contents,pull_request_review_write,add_comment_to_pending_review']
 ```
 
-多账户 = 在同一个 `- insert:` 列表里再放一行相同 `name` 的实例（id 不同），各自独立轮询。只有默认行设置 `uiSettings: true`；新增账户必须保持 `false`，继续由 profile 配置。
+多账户 = 在同一个 `- insert:` 列表里再放一行相同 `name` 的实例（id 不同），各自独立轮询。`uiSettings` 默认为 `true`，因此新增账户必须显式设置 `uiSettings: false`；只有默认实例拥有固定的 Web 设置命名空间。
 
 Web profile 提供 settings 与对应 Client slot 时，设置页会出现 GitHub reviewer 卡片。它们通过可选 inject 接入：缺失 settings、workspace 或 Client UI 依赖只会让对应伴生功能等待，不会阻塞 Host reviewer。卡片保存后只会异步重启 reviewer 内部 runtime，不会重启整个 DSH 进程。
 
