@@ -2,11 +2,11 @@
 
 English | [中文](config.md)
 
-Mount the plugin with `- insert:` in the profile's `cordis.patch.yml` (see [Deployment and Mounting](./deploy.en.md)), **one plugin instance per account** (flat config, multi-instance pattern). A single instance's full config fields:
+After installing the bundle, override and enable its default `github-reviewer` row in the profile's `cordis.patch.yml` (see [Deployment and Mounting](./deploy.en.md)). Use **one plugin instance per account** (flat config, multi-instance pattern); add extra accounts with `- insert:`. The default instance's full config fields are:
 
 ```yaml
-- id: github-reviewer-org
-  name: '@xinlongwu/dsh-github-reviewer'
+- id: github-reviewer
+  disabled: false
   config:
     name: org                             # account label: logs + cursor record key
     appId: '123456'
@@ -86,7 +86,7 @@ Config values in patch files (`cordis.patch.yml`, `--patch` overlays, bundles) s
 ```yaml
 - insert:
     - id: github-reviewer
-      name: '@xinlongwu/dsh-github-reviewer'
+      name: 'dsh-github-reviewer'
       config:
         # read from the environment instead of a literal token:
         personalAccessToken: !!js process.env.GITHUB_PAT

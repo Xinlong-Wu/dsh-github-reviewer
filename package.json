@@ -1,7 +1,7 @@
 {
-  "name": "@xinlongwu/dsh-github-reviewer",
+  "name": "dsh-github-reviewer",
   "description": "DeepSeek Harness plugin: automated GitHub PR review bot ported from LingoBridge",
-  "version": "0.1.0-rc8",
+  "version": "0.1.0-rc9",
   "publishConfig": {
     "access": "public"
   },
@@ -17,13 +17,21 @@
     ".": {
       "types": "./lib/index.d.ts",
       "default": "./lib/index.js"
-    }
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
   },
   "files": [
     "lib/**/*",
     "docs/**/*",
+    "cordis.patch.yml",
     "cordis.yml.example"
   ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
   "scripts": {
     "clean": "node -e \"fs.rmSync('lib',{recursive:true,force:true})\"",
     "build": "npm run clean && tsc -p tsconfig.json",

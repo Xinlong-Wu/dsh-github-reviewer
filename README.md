@@ -2,10 +2,10 @@
 
 [English](README.en.md) | 中文
 
-[![npm version](https://img.shields.io/npm/v/@xinlongwu/dsh-github-reviewer)](https://www.npmjs.com/package/@xinlongwu/dsh-github-reviewer)
+[![npm version](https://img.shields.io/npm/v/dsh-github-reviewer)](https://www.npmjs.com/package/dsh-github-reviewer)
 [![CI](https://github.com/Xinlong-Wu/dsh-github-reviewer/actions/workflows/ci.yml/badge.svg)](https://github.com/Xinlong-Wu/dsh-github-reviewer/actions/workflows/ci.yml)
-[![license](https://img.shields.io/npm/l/@xinlongwu/dsh-github-reviewer)](https://github.com/Xinlong-Wu/dsh-github-reviewer/blob/main/LICENSE)
-[![node](https://img.shields.io/node/v/@xinlongwu/dsh-github-reviewer)](https://nodejs.org)
+[![license](https://img.shields.io/npm/l/dsh-github-reviewer)](https://github.com/Xinlong-Wu/dsh-github-reviewer/blob/main/LICENSE)
+[![node](https://img.shields.io/node/v/dsh-github-reviewer)](https://nodejs.org)
 
 一个 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 插件：轮询配置的 GitHub 仓库中开放的 pull request，并自动发布 `COMMENT` 评审。它是 [LingoBridge](https://github.com/Xinlong-Wu/LingoBridge) 内置 GitHub reviewer 的 TypeScript 移植，并且每次评审和 `/bot` 对话都通过 **harness agent 主循环**驱动：每个 PR 一个常驻 Agent、每个 PR 一条会话日志，通过 harness 的 session-persistence 机制持久化。
 
@@ -26,10 +26,10 @@
 ## 快速开始
 
 ```sh
-npm install @xinlongwu/dsh-github-reviewer
+dsh plugin --profile web add dsh-github-reviewer
 ```
 
-在 profile 的 `cordis.patch.yml` 中以 `- insert:` 挂载插件（完整步骤见[部署与挂载](docs/deploy.md)），重启 harness 后开放 PR 会在下一个轮询周期收到 `COMMENT` 评审；在 PR 下评论 `/bot <问题>` 可与评审器对话。
+安装会把 bundle 加入 web profile，并注册一个默认禁用的 `github-reviewer` 实例。在 profile 的 `cordis.patch.yml` 中为该实例配置认证、仓库和 MCP server，再设置 `disabled: false`（完整步骤见[部署与挂载](docs/deploy.md)）。重启 harness 后，开放 PR 会在下一个轮询周期收到 `COMMENT` 评审；在 PR 下评论 `/bot <问题>` 可与评审器对话。
 
 ## 文档
 

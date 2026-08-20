@@ -14,7 +14,7 @@
 # `patch: entry "<id>" not found`.
 #
 # Mount the plugin ONCE PER ACCOUNT (flat config, multi-instance pattern):
-# every entry below with `name: '@xinlongwu/dsh-github-reviewer'` runs one
+# every entry below with `name: 'dsh-github-reviewer'` runs one
 # independent poll loop.
 
 # LLM adapter — replace with whatever LLM plugin your deployment uses.
@@ -57,7 +57,7 @@
     model: deepseek-chat
 
 - id: github-reviewer-org
-  name: '@xinlongwu/dsh-github-reviewer'
+  name: 'dsh-github-reviewer'
   config:
     # Account label used in logs and the cursor record key in the storage domain.
     name: org
@@ -120,7 +120,7 @@
 
 # A second account is just another plugin instance with its own config.
 - id: github-reviewer-personal
-  name: '@xinlongwu/dsh-github-reviewer'
+  name: 'dsh-github-reviewer'
   config:
     name: personal
     appId: '654321'

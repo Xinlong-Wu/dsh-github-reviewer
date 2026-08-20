@@ -47,6 +47,14 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Verify DSH bundle package
+        run: |
+          node -e "const p=require('./package.json'); if (p.name !== 'dsh-github-reviewer' || p.dsh?.bundle?.patch !== './cordis.patch.yml') process.exit(1)"
+          test -f cordis.patch.yml
+          npm pack --dry-run --json > pack-dry-run.json
+          node -e "const r=require('./pack-dry-run.json'); if (!r[0].files.some(f => f.path === 'cordis.patch.yml')) process.exit(1)"
+          rm pack-dry-run.json
+
       - name: Package hygiene (publint)
         run: npm run publint
 

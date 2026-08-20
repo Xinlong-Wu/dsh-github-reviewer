@@ -5,9 +5,9 @@ name: Publish
 # The package.json version must exactly equal the tag without the leading 'v';
 # otherwise the run fails fast and nothing is published.
 #
-# Prerequisite: set the repository secret NODE_AUTH_TOKEN to an npm access
-# token (classic token with write permission, or a granular token scoped to
-# the @xinlong scope with "Publish packages to the registry").
+# Prerequisite: set the repository secret NODE_AUTH_TOKEN to an npm automation
+# or granular access token allowed to create and publish the public unscoped
+# package `dsh-github-reviewer`.
 
 on:
   push:
@@ -40,15 +40,20 @@ jobs:
             exit 1
           fi
 
-      - name: Verify package.json version matches tag
+      - name: Verify package identity and version
         run: |
-          EXPECTED="${GITHUB_REF_NAME#v}"
-          ACTUAL="$(node -p "require('./package.json').version")"
-          if [ "$EXPECTED" != "$ACTUAL" ]; then
-            echo "::error::package.json version is '$ACTUAL' but tag is '$GITHUB_REF_NAME'. Bump package.json to '$EXPECTED' before tagging."
+          EXPECTED_VERSION="${GITHUB_REF_NAME#v}"
+          ACTUAL_VERSION="$(node -p "require('./package.json').version")"
+          ACTUAL_NAME="$(node -p "require('./package.json').name")"
+          if [ "$ACTUAL_NAME" != "dsh-github-reviewer" ]; then
+            echo "::error::package.json name is '$ACTUAL_NAME', expected 'dsh-github-reviewer'."
             exit 1
           fi
-          echo "PKG_VERSION=$EXPECTED" >> "$GITHUB_ENV"
+          if [ "$EXPECTED_VERSION" != "$ACTUAL_VERSION" ]; then
+            echo "::error::package.json version is '$ACTUAL_VERSION' but tag is '$GITHUB_REF_NAME'. Bump package.json to '$EXPECTED_VERSION' before tagging."
+            exit 1
+          fi
+          echo "PKG_VERSION=$EXPECTED_VERSION" >> "$GITHUB_ENV"
 
       - name: Install dependencies
         run: npm ci
@@ -65,6 +70,14 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Verify DSH bundle package
+        run: |
+          node -e "const p=require('./package.json'); if (p.name !== 'dsh-github-reviewer' || p.dsh?.bundle?.patch !== './cordis.patch.yml') process.exit(1)"
+          test -f cordis.patch.yml
+          npm pack --dry-run --json > pack-dry-run.json
+          node -e "const r=require('./pack-dry-run.json'); if (!r[0].files.some(f => f.path === 'cordis.patch.yml')) process.exit(1)"
+          rm pack-dry-run.json
+
       - name: Package hygiene (publint)
         run: npm run publint
 
@@ -76,7 +89,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
         # Every release — rc or stable — publishes to the default "latest"
         # dist-tag so plain `npm install` always gets the newest build.
-        run: npm publish --provenance
+        run: npm publish --access public --provenance
 
       - name: Create GitHub release
         env:
