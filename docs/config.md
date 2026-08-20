@@ -2,11 +2,11 @@
 
 [English](config.en.md) | 中文
 
-在 profile 的 `cordis.patch.yml` 中以 `- insert:` 挂载插件（见[部署与挂载](./deploy.md)），**每个账户一个插件实例**（扁平配置、多实例模式）。以下是单个实例的完整配置字段：
+安装 bundle 后，在 profile 的 `cordis.patch.yml` 中覆盖默认的 `github-reviewer` 行并启用它（见[部署与挂载](./deploy.md)）。**每个账户一个插件实例**（扁平配置、多实例模式）；额外账户仍用 `- insert:` 添加。以下是默认实例的完整配置字段：
 
 ```yaml
-- id: github-reviewer-org
-  name: '@xinlongwu/dsh-github-reviewer'
+- id: github-reviewer
+  disabled: false
   config:
     name: org                             # 账户标签：日志与游标记录键
     appId: '123456'
@@ -85,7 +85,7 @@ patch 文件（`cordis.patch.yml`、`--patch` 覆盖层、bundle）里的配置�
 ```yaml
 - insert:
     - id: github-reviewer
-      name: '@xinlongwu/dsh-github-reviewer'
+      name: 'dsh-github-reviewer'
       config:
         # 从环境变量读，避免把令牌明文写进文件：
         personalAccessToken: !!js process.env.GITHUB_PAT

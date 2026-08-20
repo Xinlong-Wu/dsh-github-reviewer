@@ -2,10 +2,10 @@
 
 English | [中文](README.md)
 
-[![npm version](https://img.shields.io/npm/v/@xinlongwu/dsh-github-reviewer)](https://www.npmjs.com/package/@xinlongwu/dsh-github-reviewer)
+[![npm version](https://img.shields.io/npm/v/dsh-github-reviewer)](https://www.npmjs.com/package/dsh-github-reviewer)
 [![CI](https://github.com/Xinlong-Wu/dsh-github-reviewer/actions/workflows/ci.yml/badge.svg)](https://github.com/Xinlong-Wu/dsh-github-reviewer/actions/workflows/ci.yml)
-[![license](https://img.shields.io/npm/l/@xinlongwu/dsh-github-reviewer)](https://github.com/Xinlong-Wu/dsh-github-reviewer/blob/main/LICENSE)
-[![node](https://img.shields.io/node/v/@xinlongwu/dsh-github-reviewer)](https://nodejs.org)
+[![license](https://img.shields.io/npm/l/dsh-github-reviewer)](https://github.com/Xinlong-Wu/dsh-github-reviewer/blob/main/LICENSE)
+[![node](https://img.shields.io/node/v/dsh-github-reviewer)](https://nodejs.org)
 
 A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) plugin that polls configured GitHub repositories for open pull requests and posts automated `COMMENT` reviews. It is a TypeScript port of the GitHub reviewer built into [LingoBridge](https://github.com/Xinlong-Wu/LingoBridge), and it drives every review and `/bot` chat through the **harness agent loop**: one live Agent per PR, one session log per PR, durable through the harness session-persistence seam.
 
@@ -26,10 +26,10 @@ A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) plugin tha
 ## Quick start
 
 ```sh
-npm install @xinlongwu/dsh-github-reviewer
+dsh plugin --profile web add dsh-github-reviewer
 ```
 
-Mount the plugin with `- insert:` in the profile's `cordis.patch.yml` (full steps in [Deployment and Mounting](docs/deploy.en.md)); after restarting the harness, open PRs receive a `COMMENT` review within one poll interval, and commenting `/bot <question>` on a PR talks to the reviewer.
+Installation adds the bundle to the web profile and registers one disabled `github-reviewer` instance. Configure its authentication, repositories, and MCP server in the profile's `cordis.patch.yml`, then set `disabled: false` (full steps in [Deployment and Mounting](docs/deploy.en.md)). After restarting the harness, open PRs receive a `COMMENT` review within one poll interval, and commenting `/bot <question>` on a PR talks to the reviewer.
 
 ## Documentation
 

@@ -1,10 +1,11 @@
 name: npm dist-tag cleanup
 
-# One-off tag hygiene using the NODE_AUTH_TOKEN secret (which cannot be read
-# locally): remove a stale dist-tag. Trigger manually:
+# One-off tag hygiene for the legacy scoped package, using the NODE_AUTH_TOKEN
+# secret (which cannot be read locally). Trigger manually:
 #   gh workflow run cleanup-tag.yml -f tag=next
-# The publish workflow no longer uses `next` (everything goes to `latest`),
-# so the old `next -> 0.1.0-rc2` pointer just lingers until removed.
+# The replacement package is unscoped, while the old
+# `@xinlongwu/dsh-github-reviewer` package retains a stale
+# `next -> 0.1.0-rc2` pointer until this workflow removes it.
 
 on:
   workflow_dispatch:
