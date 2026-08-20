@@ -87,6 +87,7 @@ export function GithubReviewerCard(props: GithubReviewerCardProps) {
   const [modelMoveAnnouncement, setModelMoveAnnouncement] = useState('')
   const pendingModelFocus = useRef<number | null>(null)
   const modelHandles = useRef<Array<HTMLButtonElement | null>>([])
+  const modelDragDepths = useRef(new Map<number, number>())
 
   useEffect(() => {
     const index = pendingModelFocus.current
@@ -210,14 +211,30 @@ export function GithubReviewerCard(props: GithubReviewerCardProps) {
                         <div
                           className={rowClass}
                           key={index}
+                          onDragEnter={(event) => {
+                            if (disabled || draggingModelIndex === null || draggingModelIndex === index) return
+                            event.preventDefault()
+                            const depth = (modelDragDepths.current.get(index) ?? 0) + 1
+                            modelDragDepths.current.set(index, depth)
+                            setDropModelIndex(index)
+                          }}
+                          onDragLeave={() => {
+                            const depth = Math.max(0, (modelDragDepths.current.get(index) ?? 0) - 1)
+                            if (depth > 0) {
+                              modelDragDepths.current.set(index, depth)
+                              return
+                            }
+                            modelDragDepths.current.delete(index)
+                            setDropModelIndex(current => current === index ? null : current)
+                          }}
                           onDragOver={(event) => {
                             if (disabled || draggingModelIndex === null || draggingModelIndex === index) return
                             event.preventDefault()
                             event.dataTransfer.dropEffect = 'move'
-                            setDropModelIndex(index)
                           }}
                           onDrop={(event) => {
                             event.preventDefault()
+                            modelDragDepths.current.clear()
                             if (disabled) {
                               setDraggingModelIndex(null)
                               setDropModelIndex(null)
@@ -244,10 +261,21 @@ export function GithubReviewerCard(props: GithubReviewerCardProps) {
                             onDragStart={(event) => {
                               event.dataTransfer.effectAllowed = 'move'
                               event.dataTransfer.setData('text/plain', String(index))
+                              const block = event.currentTarget.closest<HTMLElement>('.ghr-model-row')
+                              if (block !== null && typeof event.dataTransfer.setDragImage === 'function') {
+                                const rect = block.getBoundingClientRect()
+                                const pointerX = Number.isFinite(event.clientX) ? event.clientX : rect.left
+                                const pointerY = Number.isFinite(event.clientY) ? event.clientY : rect.top
+                                const offsetX = Math.max(0, Math.min(rect.width, pointerX - rect.left))
+                                const offsetY = Math.max(0, Math.min(rect.height, pointerY - rect.top))
+                                event.dataTransfer.setDragImage(block, offsetX, offsetY)
+                              }
+                              modelDragDepths.current.clear()
                               setDraggingModelIndex(index)
                               setDropModelIndex(null)
                             }}
                             onDragEnd={() => {
+                              modelDragDepths.current.clear()
                               setDraggingModelIndex(null)
                               setDropModelIndex(null)
                             }}
