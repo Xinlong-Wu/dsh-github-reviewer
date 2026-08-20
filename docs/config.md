@@ -2,14 +2,12 @@
 
 [English](config.en.md) | 中文
 
-安装 bundle 后，在 profile 的 `cordis.patch.yml` 中覆盖默认的 `github-reviewer` 行并启用它（见[部署与挂载](./deploy.md)）。**每个账户一个插件实例**（扁平配置、多实例模式）；额外账户仍用 `- insert:` 添加。以下是默认实例的完整配置字段：
+安装 bundle 后，在下一次启动前，于 profile 的 `cordis.patch.yml` 中按 `id` 补齐默认 `github-reviewer` 行的运行配置（见[部署与挂载](./deploy.md)）。该行默认启用，且 `uiSettings` 默认为 `true`。**每个账户一个插件实例**（扁平配置、多实例模式）；额外账户仍用 `- insert:` 添加。以下是默认实例的完整配置字段：
 
 ```yaml
 - id: github-reviewer
-  disabled: false
   config:
     name: org                             # 账户标签：日志与游标记录键
-    uiSettings: true                      # 仅默认实例开启 Web 设置卡片
     appId: '123456'
     installationId: '987654'
     privateKeyPath: '/etc/dsh/github-app.pem'
@@ -37,9 +35,9 @@
       cwd: ''                              # 可选
 ```
 
-多账户 = 再挂一行相同 `name` 的插件实例，各自独立轮询。当前 Web 设置卡片只管理一个明确开启 `uiSettings: true` 的默认实例；额外账户继续由 composition 管理并设置 `uiSettings: false`。
+多账户 = 再挂一行相同 `name` 的插件实例，各自独立轮询。默认实例无需显式配置即启用 Web 设置卡片，因为 `uiSettings` 默认为 `true`；额外账户继续由 composition 管理，并必须显式设置 `uiSettings: false`。
 
-Web 卡片只覆盖 `repositories`、`pollIntervalMs`、工作区字段和 `review.*`。认证、GitHub URL 与 MCP 进程配置仍由 `cordis.patch.yml` 管理。保存时只写 settings 用户覆盖层，不改写 profile；清除字段后重新继承 profile 值。保存成功表示“已持久化并请求异步重启 reviewer runtime”，不是整个 DSH 进程重启完成。
+Web 卡片标题为 **GitHub Reviewer**，默认折叠。它只覆盖 `repositories`、`pollIntervalMs`、工作区字段和 `review.*`：仓库使用可增删的“组织/仓库”双输入行，添加与删除使用图标按钮；模型候选使用来自 Host `llm.models` 目录的 provider/model 双下拉行，并按从上到下的优先级拖拽排序（手柄聚焦后也可用上、下方向键移动）。认证、GitHub URL 与 MCP 进程配置仍由 `cordis.patch.yml` 管理。保存时只写 settings 用户覆盖层，不改写 profile；清除字段后重新继承 profile 值。保存成功表示“已持久化并请求异步重启 reviewer runtime”，不是整个 DSH 进程重启完成。
 
 `settings`、`workspaceRegistry` 与 Client UI 都通过可选注入挂载：缺少或稍后卸载任一依赖时，Host reviewer 仍继续工作；settings 卸载后会回退到 composition 配置并只重启内部 reviewer runtime。
 
@@ -48,7 +46,7 @@ Web 卡片只覆盖 `repositories`、`pollIntervalMs`、工作区字段和 `revi
 | 字段 | 默认值 | 说明 |
 |---|---|---|
 | `name` | `default` | 账户标签，用于日志与游标记录键 |
-| `uiSettings` | `false`（bundle 默认行设为 `true`） | 注册固定的 `github-reviewer` Web 设置命名空间；仅一个实例可开启，额外账户保持 `false` |
+| `uiSettings` | `true` | 注册固定的 `github-reviewer` Web 设置命名空间；仅一个实例可开启，额外账户必须显式设置为 `false` |
 | `appId` | — | GitHub App ID（App 模式必填） |
 | `installationId` | — | 用于生成安装令牌的 GitHub App 安装 ID（App 模式必填） |
 | `privateKeyPath` | — | 用于签名 GitHub App JWT 的本地 PEM 私钥路径（App 模式必填） |
@@ -56,7 +54,7 @@ Web 卡片只覆盖 `repositories`、`pollIntervalMs`、工作区字段和 `revi
 | `baseUrl` | `https://api.github.com` | GitHub REST API 基础 URL |
 | `webUrl` | `https://github.com` | GitHub web URL 及 MCP 的 `GITHUB_HOST` 值 |
 | `pollIntervalMs` | `120000` | PR 轮询间隔 |
-| `repositories` | — | `owner/repo` 形式的仓库白名单；至少一个（必填） |
+| `repositories` | `[]` | `owner/repo` 形式的仓库白名单；允许为空，空列表表示 reviewer 保持运行但不轮询任何仓库 |
 | `workspaceDir` | `$DSH_HOME/github-reviewer/<name>` | 评审/对话会话目录；挂载 `@deepseek-ai/dsh-workspace`（web profile 自带，其服务名为 `workspaceRegistry`）时注册为 harness 工作区，PR 会话归入该工作区而非“未分组” |
 | `workspaceTitle` | `GithubReviewer` | 上述工作区的显示标题 |
 | `review.maxToolCalls` | `30` | 单次评审回合的工具调用预算；超限被守卫拒绝 |
@@ -89,20 +87,18 @@ Web 卡片只覆盖 `repositories`、`pollIntervalMs`、工作区字段和 `revi
 patch 文件（`cordis.patch.yml`、`--patch` 覆盖层、bundle）里的配置值支持 YAML `!!js` 标签，在**启动加载时**同步求值，可用于任意字段（包括 `disabled`）：
 
 ```yaml
-- insert:
-    - id: github-reviewer
-      name: 'dsh-github-reviewer'
-      config:
-        # 从环境变量读，避免把令牌明文写进文件：
-        personalAccessToken: !!js process.env.GITHUB_PAT
-        # 带默认值回退：
-        # personalAccessToken: !!js process.env.GITHUB_PAT ?? ''
-        # 含空格/操作符/引号的表达式整体加引号：
-        # pollIntervalMs: !!js "process.env.DSH_GHR_POLL_MS ? Number(process.env.DSH_GHR_POLL_MS) : 120000"
-        # 路径拼到 $DSH_HOME（默认 ~/.dsh）下：
-        # privateKeyPath: !!js dshHomePath('secrets', 'github-app.pem')
-        # 平台条件禁用：
-        # disabled: !!js process.platform === 'win32'
+- id: github-reviewer
+  # Loader 字段与 config 对齐到各自层级；例如按平台禁用：
+  disabled: !!js "process.platform === 'win32'"
+  config:
+    # 从环境变量读，避免把令牌明文写进文件：
+    personalAccessToken: !!js process.env.GITHUB_PAT
+    # 带默认值回退；含操作符的表达式整体加引号：
+    # personalAccessToken: !!js "process.env.GITHUB_PAT ?? ''"
+    # 数值转换同样保留在表达式中：
+    # pollIntervalMs: !!js "process.env.DSH_GHR_POLL_MS ? Number(process.env.DSH_GHR_POLL_MS) : 120000"
+    # 路径拼到 $DSH_HOME（默认 ~/.dsh）下：
+    # privateKeyPath: !!js "dshHomePath('secrets', 'github-app.pem')"
 ```
 
 - **求值作用域**：表达式在 loader 上下文中以 `with(ctx)` 求值——可直接用 `process`（`process.env.X`、`process.cwd()`、`process.platform` 等）和 `dshHomePath(...segments)`（把片段拼到 `$DSH_HOME` 下）；`??`、三元、模板字符串等 JS 语法都可用。

@@ -2,14 +2,12 @@
 
 English | [中文](config.md)
 
-After installing the bundle, override and enable its default `github-reviewer` row in the profile's `cordis.patch.yml` (see [Deployment and Mounting](./deploy.en.md)). Use **one plugin instance per account** (flat config, multi-instance pattern); add extra accounts with `- insert:`. The default instance's full config fields are:
+After installing the bundle, complete the default `github-reviewer` row's runtime config by id in the profile's `cordis.patch.yml` before the next start (see [Deployment and Mounting](./deploy.en.md)). The row is enabled by default and `uiSettings` defaults to `true`. Use **one plugin instance per account** (flat config, multi-instance pattern); add extra accounts with `- insert:`. The default instance's full config fields are:
 
 ```yaml
 - id: github-reviewer
-  disabled: false
   config:
     name: org                             # account label: logs + cursor record key
-    uiSettings: true                      # enable the Web card only on the default instance
     appId: '123456'
     installationId: '987654'
     privateKeyPath: '/etc/dsh/github-app.pem'
@@ -38,9 +36,9 @@ After installing the bundle, override and enable its default `github-reviewer` r
       cwd: ''                              # optional
 ```
 
-Multiple accounts = another plugin instance with the same `name`, each running its own poll loop. The current Web card manages only the explicit default instance with `uiSettings: true`; extra accounts stay composition-managed with `uiSettings: false`.
+Multiple accounts = another plugin instance with the same `name`, each running its own poll loop. The default instance exposes the Web card without an explicit field because `uiSettings` defaults to `true`; extra accounts remain composition-managed and must explicitly set `uiSettings: false`.
 
-The Web card overrides only `repositories`, `pollIntervalMs`, workspace fields, and `review.*`. Authentication, GitHub URLs, and MCP process settings remain in `cordis.patch.yml`. Saving writes the settings user-override layer rather than rewriting the profile, and clearing a field restores inheritance from the profile. A successful save means “persisted and asynchronous reviewer-runtime restart requested,” not that the whole DSH process restarted.
+The **GitHub Reviewer** Web card starts collapsed and overrides only `repositories`, `pollIntervalMs`, workspace fields, and `review.*`. Repositories use organization/repository input rows with icon-only add/remove actions, while model candidates use provider/model select rows sourced from the Host `llm.models` catalog. Candidates are prioritized top to bottom and can be reordered by dragging the handle or using Arrow Up/Down while it is focused. Authentication, GitHub URLs, and MCP process settings remain in `cordis.patch.yml`. Saving writes the settings user-override layer rather than rewriting the profile, and clearing a field restores inheritance from the profile. A successful save means “persisted and asynchronous reviewer-runtime restart requested,” not that the whole DSH process restarted.
 
 `settings`, `workspaceRegistry`, and the Client UI are optional injected companions. Missing or later-unmounted companions do not stop the Host reviewer; detaching settings falls back to composition config and restarts only the internal reviewer runtime.
 
@@ -49,7 +47,7 @@ The Web card overrides only `repositories`, `pollIntervalMs`, workspace fields, 
 | Field | Default | Description |
 |---|---|---|
 | `name` | `default` | Account label used in logs and the cursor record key |
-| `uiSettings` | `false` (the bundle's default row sets `true`) | Register the fixed `github-reviewer` Web settings namespace; only one instance may enable it and extra accounts must remain `false` |
+| `uiSettings` | `true` | Register the fixed `github-reviewer` Web settings namespace; only one instance may enable it and extra accounts must explicitly set it to `false` |
 | `appId` | — | GitHub App ID (required in App mode) |
 | `installationId` | — | GitHub App installation ID used to mint installation tokens (required in App mode) |
 | `privateKeyPath` | — | Local PEM private key path for signing GitHub App JWTs (required in App mode) |
@@ -57,7 +55,7 @@ The Web card overrides only `repositories`, `pollIntervalMs`, workspace fields, 
 | `baseUrl` | `https://api.github.com` | GitHub REST API base URL |
 | `webUrl` | `https://github.com` | GitHub web URL and MCP `GITHUB_HOST` value |
 | `pollIntervalMs` | `120000` | Interval between PR polling passes |
-| `repositories` | — | Repository allowlist in `owner/repo` form; at least one is required |
+| `repositories` | `[]` | Repository allowlist in `owner/repo` form; an empty list keeps the reviewer running but polls no repositories |
 | `workspaceDir` | `$DSH_HOME/github-reviewer/<name>` | Review/chat session directory; registered as a harness workspace when `@deepseek-ai/dsh-workspace` is mounted (the web profile includes it and it publishes `workspaceRegistry`), so PR sessions group there instead of the ungrouped bucket |
 | `workspaceTitle` | `GithubReviewer` | Display title of that workspace |
 | `review.maxToolCalls` | `30` | Tool-call budget for one review turn; the guard rejects further calls |
@@ -90,20 +88,18 @@ The plugin injects two environment variables into **every per-turn** MCP server 
 Config values in patch files (`cordis.patch.yml`, `--patch` overlays, bundles) support the YAML `!!js` tag, evaluated synchronously at boot — usable in any field, including `disabled`:
 
 ```yaml
-- insert:
-    - id: github-reviewer
-      name: 'dsh-github-reviewer'
-      config:
-        # read from the environment instead of a literal token:
-        personalAccessToken: !!js process.env.GITHUB_PAT
-        # with a fallback default:
-        # personalAccessToken: !!js process.env.GITHUB_PAT ?? ''
-        # quote expressions containing spaces/operators/quotes:
-        # pollIntervalMs: !!js "process.env.DSH_GHR_POLL_MS ? Number(process.env.DSH_GHR_POLL_MS) : 120000"
-        # join segments onto $DSH_HOME (default ~/.dsh):
-        # privateKeyPath: !!js dshHomePath('secrets', 'github-app.pem')
-        # platform-conditional disable:
-        # disabled: !!js process.platform === 'win32'
+- id: github-reviewer
+  # Keep Loader fields and plugin config at their respective levels; for example:
+  disabled: !!js "process.platform === 'win32'"
+  config:
+    # read from the environment instead of a literal token:
+    personalAccessToken: !!js process.env.GITHUB_PAT
+    # quote fallback expressions containing operators:
+    # personalAccessToken: !!js "process.env.GITHUB_PAT ?? ''"
+    # keep numeric conversion inside the expression:
+    # pollIntervalMs: !!js "process.env.DSH_GHR_POLL_MS ? Number(process.env.DSH_GHR_POLL_MS) : 120000"
+    # join segments onto $DSH_HOME (default ~/.dsh):
+    # privateKeyPath: !!js "dshHomePath('secrets', 'github-app.pem')"
 ```
 
 - **Scope**: the expression evaluates inside `with(ctx)` over the loader context — `process` is available (`process.env.X`, `process.cwd()`, `process.platform`, …) plus `dshHomePath(...segments)` (joins segments onto `$DSH_HOME`); full JS syntax (`??`, ternaries, template strings) works.

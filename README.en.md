@@ -30,7 +30,7 @@ A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) plugin tha
 dsh plugin --profile web add dsh-github-reviewer
 ```
 
-Installation adds the bundle to the web profile and registers one disabled `github-reviewer` instance. Configure its authentication, repositories, and MCP server in the profile's `cordis.patch.yml`, then set `disabled: false` (full steps in [Deployment and Mounting](docs/deploy.en.md)). After restarting the harness, open PRs receive a `COMMENT` review within one poll interval, and commenting `/bot <question>` on a PR talks to the reviewer.
+Installation adds the bundle to the web profile and registers one enabled `github-reviewer` instance; `uiSettings` also defaults to `true`. Before the next restart, complete authentication and MCP configuration by `id` in the profile's `cordis.patch.yml`, and add repositories as needed (no `disabled: false` or `uiSettings: true` is required; see [Deployment and Mounting](docs/deploy.en.md)). The **GitHub Reviewer** settings card starts collapsed, edits repositories as organization/repository rows with icon-only add/remove actions, and selects review candidates from DSH's configured provider/model catalog. Candidates are prioritized from top to bottom and can be reordered by dragging. Repositories may be empty; the reviewer stays running but polls nothing.
 
 ## Documentation
 
