@@ -11,6 +11,9 @@ import z from '@deepseek-ai/schemastery'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { parseRepository } from './github/model.ts'
+import type { ReviewerSettings } from './settings-contract.ts'
+
+export type { ReviewerSettings } from './settings-contract.ts'
 
 /** Defaults shared with LingoBridge. */
 export const DEFAULT_BASE_URL = 'https://api.github.com'
@@ -73,6 +76,8 @@ export interface McpConfig {
 export interface Config {
   /** Account label used in logs and as the cursor record key; defaults to `default`. */
   name?: string
+  /** Register the optional Web settings namespace for this instance. Only one instance may enable it. */
+  uiSettings?: boolean
   appId: string
   installationId: string
   privateKeyPath: string
@@ -89,8 +94,8 @@ export interface Config {
   /**
    * Directory that hosts this account's review-agent sessions. Registered as a
    * harness workspace (titled {@link DEFAULT_WORKSPACE_TITLE}) when the
-   * deployment mounts the `workspace` service, so PR sessions group under that
-   * workspace instead of the ungrouped bucket. Defaults to
+   * deployment mounts `@deepseek-ai/dsh-workspace` and its `workspaceRegistry`
+   * service, so PR sessions group there instead of the ungrouped bucket. Defaults to
    * `$DSH_HOME/github-reviewer/<name>`.
    */
   workspaceDir?: string
@@ -105,6 +110,7 @@ export interface Config {
 /** One review account with every default resolved. */
 export interface ResolvedAccountConfig {
   name: string
+  uiSettings: boolean
   appId: string
   installationId: string
   privateKeyPath: string
@@ -134,6 +140,15 @@ const Review = z.object({
   models: z.array(ReviewModelEntry).default([]),
 })
 
+/** Settings schema intentionally excluding account identity, authentication, URLs, and MCP process configuration. */
+export const ReviewerSettingsSchema = z.object({
+  pollIntervalMs: z.number().min(1000).default(DEFAULT_POLL_INTERVAL_MS),
+  repositories: z.array(z.string()).default([]),
+  workspaceDir: z.string().default(''),
+  workspaceTitle: z.string().default(DEFAULT_WORKSPACE_TITLE),
+  review: Review,
+}) as unknown as z<ReviewerSettings>
+
 const Mcp = z.object({
   command: z.string().default(''),
   args: z.array(z.string()).default([]),
@@ -144,10 +159,11 @@ const Mcp = z.object({
 /** Schemastery schema for one plugin instance (one account). */
 export const Config = z.object({
   name: z.string().default(DEFAULT_ACCOUNT_NAME),
+  uiSettings: z.boolean().default(false),
   appId: z.string().default(''),
   installationId: z.string().default(''),
   privateKeyPath: z.string().default(''),
-  personalAccessToken: z.string().default(''),
+  personalAccessToken: z.string().role('secret').default(''),
   baseUrl: z.string().default(DEFAULT_BASE_URL),
   webUrl: z.string().default(DEFAULT_WEB_URL),
   pollIntervalMs: z.number().min(1000).default(DEFAULT_POLL_INTERVAL_MS),
@@ -187,6 +203,7 @@ export function normalizeAccountConfig(account: Config): ResolvedAccountConfig {
   const args = (account.mcp?.args ?? []).map(value => value.trim()).filter(value => value !== '')
   return {
     name,
+    uiSettings: account.uiSettings ?? false,
     appId: account.appId.trim(),
     installationId: account.installationId.trim(),
     privateKeyPath: account.privateKeyPath.trim(),
@@ -217,6 +234,45 @@ export function normalizeAccountConfig(account: Config): ResolvedAccountConfig {
       cwd: (account.mcp?.cwd ?? '').trim(),
     },
   }
+}
+
+/** Extract the non-secret settings base from a normalized account configuration. */
+export function reviewerSettingsOf(account: ResolvedAccountConfig): ReviewerSettings {
+  return {
+    pollIntervalMs: account.pollIntervalMs,
+    repositories: [...account.repositories],
+    workspaceDir: account.workspaceDir,
+    workspaceTitle: account.workspaceTitle,
+    review: {
+      ...account.review,
+      commandAuthorAssociations: [...account.review.commandAuthorAssociations],
+      models: account.review.models.map(model => ({ ...model })),
+    },
+  }
+}
+
+/** Resolve one settings value over composition-owned identity, authentication, URLs, and MCP fields. */
+export function accountWithReviewerSettings(
+  base: ResolvedAccountConfig,
+  settings: ReviewerSettings,
+): ResolvedAccountConfig {
+  return normalizeAccountConfig({
+    ...base,
+    pollIntervalMs: settings.pollIntervalMs,
+    repositories: settings.repositories,
+    workspaceDir: settings.workspaceDir,
+    workspaceTitle: settings.workspaceTitle,
+    review: settings.review,
+  })
+}
+
+/**
+ * Resolve and validate a settings candidate before it is persisted or used to
+ * replace a running reviewer runtime.
+ */
+export function validateReviewerSettings(base: ResolvedAccountConfig, settings: ReviewerSettings): void {
+  const account = accountWithReviewerSettings(base, settings)
+  validateAccountRuntime(account.name, account)
 }
 
 /**

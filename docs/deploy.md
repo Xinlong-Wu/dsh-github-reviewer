@@ -94,6 +94,7 @@ profile 的 `pnpm-workspace.yaml` 里 `autoInstallPeers: false`，pnpm 只会安
   disabled: false
   config:
     name: personal
+    uiSettings: true
     # 二选一：GitHub App 三件套（appId/installationId/privateKeyPath）
     # 或个人访问令牌。避免在文件里写明文令牌，可用 !!js 表达式从环境变量读取：
     # personalAccessToken: !!js process.env.GITHUB_PAT
@@ -110,7 +111,9 @@ profile 的 `pnpm-workspace.yaml` 里 `autoInstallPeers: false`，pnpm 只会安
       #        '--tools=pull_request_read,get_file_contents,pull_request_review_write,add_comment_to_pending_review']
 ```
 
-多账户 = 在同一个 `- insert:` 列表里再放一行相同 `name` 的实例（id 不同），各自独立轮询。
+多账户 = 在同一个 `- insert:` 列表里再放一行相同 `name` 的实例（id 不同），各自独立轮询。只有默认行设置 `uiSettings: true`；新增账户必须保持 `false`，继续由 profile 配置。
+
+Web profile 提供 settings 与对应 Client slot 时，设置页会出现 GitHub reviewer 卡片。它们通过可选 inject 接入：缺失 settings、workspace 或 Client UI 依赖只会让对应伴生功能等待，不会阻塞 Host reviewer。卡片保存后只会异步重启 reviewer 内部 runtime，不会重启整个 DSH 进程。
 
 **4. 创建 PAT**（PAT 模式）：GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens，仅授权目标仓库，权限：Contents: Read、Pull requests: Read & Write、Issues: Read & Write、Checks: Read（Metadata 自动附带）。
 
@@ -123,4 +126,4 @@ dsh --profile web --dump-config   # 打印组合后的完整插件树，确认 g
 
 启动日志应出现 `starting github account=personal repos=1`；开放 PR 会在下一个轮询周期收到 COMMENT 评审，PR 下评论 `/bot <问题>` 可与评审器对话。默认 `github-reviewer` 行应直接覆盖；只有新增账户行需要 `- insert:` 包装。
 
-启用后，评审/对话会话会归入自动注册的 `GithubReviewer` 工作区。插件会挂载一个伴生插件，它借 inject 机制在 `workspace` 服务**可用（挂载完成）的那一刻**自动激活：创建目录并注册工作区，无需轮询或重试。组合里没有该服务时伴生插件保持闲置、不做任何目录/注册工作，reviewer 本身不受影响。可用 `workspaceDir` / `workspaceTitle` 调整。已存在的旧会话仍留在原工作区，只有新会话使用新目录。
+启用后，评审/对话会话会归入自动注册的 `GithubReviewer` 工作区。插件通过 inject 机制等待 `@deepseek-ai/dsh-workspace` 发布的 `workspaceRegistry` 服务；服务完成初始化后，伴生 fiber 创建目录并注册工作区，无需轮询或重试。组合里没有该服务时伴生 fiber 保持闲置、不做任何目录或注册工作，reviewer 本身不受影响。可用 `workspaceDir` / `workspaceTitle` 调整。已存在的旧会话仍留在原工作区，只有新会话使用新目录。

@@ -61,6 +61,10 @@
   config:
     # Account label used in logs and the cursor record key in the storage domain.
     name: org
+    # Only one instance may own the fixed `github-reviewer` Web settings card.
+    # The card manages repositories, workspace fields, and review limits; auth,
+    # URLs, and MCP process settings remain composition-managed.
+    uiSettings: true
     # Required GitHub App identity. The App needs:
     #   - Pull requests: read/write (reviews and comments)
     #   - Contents: read (on the base repository, for
@@ -79,8 +83,9 @@
     repositories:
       - 'owner/repo'
     # Review sessions are filed under an auto-registered harness workspace
-    # (needs the `workspace` service; the web profile bundles it). Default
-    # directory: $DSH_HOME/github-reviewer/<name>, title: GithubReviewer.
+    # (needs @deepseek-ai/dsh-workspace and its `workspaceRegistry` service; the
+    # web profile bundles it). Default directory:
+    # $DSH_HOME/github-reviewer/<name>, title: GithubReviewer.
     # workspaceDir: '/var/lib/dsh/ghr'
     # workspaceTitle: 'GithubReviewer'
     review:
@@ -123,6 +128,7 @@
   name: 'dsh-github-reviewer'
   config:
     name: personal
+    uiSettings: false
     appId: '654321'
     installationId: '123456'
     privateKeyPath: '/etc/dsh/github-app-2.pem'

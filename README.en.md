@@ -21,6 +21,7 @@ A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) plugin tha
 - Guards every tool call: calls must target the current PR, reads are limited to allowed methods and refs, and writes are limited to the `create` → inline comments → `submit_pending(event=COMMENT)` pending-review workflow.
 - Handles comment commands on already-processed PRs: `/review` triggers a re-review, `/bot <message>` continues the PR conversation and posts the reply to the issue thread or the review thread it answered.
 - Interrupted reviews resume: the `reviewing` cursor state re-triggers the review after a restart and continues the remaining work from the persisted session.
+- The default instance can expose a Web settings card whose saves hot-restart only the internal reviewer runtime. Settings, workspace, and Client UI are optional injected companions, so their absence does not stop the Host reviewer.
 - Sanitizes untrusted PR title/body text before prompt placement (HTML comments/hidden attributes, invisible/control characters, markdown image alt text, markdown link titles, GitHub token-like strings).
 
 ## Quick start

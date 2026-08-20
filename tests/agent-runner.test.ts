@@ -487,6 +487,17 @@ describe('AgentRunner turn deadline', () => {
   })
 })
 
+describe('AgentRunner lifecycle', () => {
+  it('rejects new turns after disposal begins', async () => {
+    const world = makeWorld()
+    const { runner } = makeRunner(world)
+
+    await runner.dispose()
+
+    await expect(runner.driveChat(pr, 'hello', new AbortController().signal)).rejects.toThrow(/disposed/)
+  })
+})
+
 describe('AgentRunner MCP host connection', () => {
   it('passes the installation token and web host to the real StdioMcpHost.connect', async () => {
     const world = makeWorld()

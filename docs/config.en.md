@@ -9,6 +9,7 @@ After installing the bundle, override and enable its default `github-reviewer` r
   disabled: false
   config:
     name: org                             # account label: logs + cursor record key
+    uiSettings: true                      # enable the Web card only on the default instance
     appId: '123456'
     installationId: '987654'
     privateKeyPath: '/etc/dsh/github-app.pem'
@@ -37,13 +38,18 @@ After installing the bundle, override and enable its default `github-reviewer` r
       cwd: ''                              # optional
 ```
 
-Multiple accounts = another plugin instance with the same `name`, each running its own poll loop.
+Multiple accounts = another plugin instance with the same `name`, each running its own poll loop. The current Web card manages only the explicit default instance with `uiSettings: true`; extra accounts stay composition-managed with `uiSettings: false`.
+
+The Web card overrides only `repositories`, `pollIntervalMs`, workspace fields, and `review.*`. Authentication, GitHub URLs, and MCP process settings remain in `cordis.patch.yml`. Saving writes the settings user-override layer rather than rewriting the profile, and clearing a field restores inheritance from the profile. A successful save means “persisted and asynchronous reviewer-runtime restart requested,” not that the whole DSH process restarted.
+
+`settings`, `workspaceRegistry`, and the Client UI are optional injected companions. Missing or later-unmounted companions do not stop the Host reviewer; detaching settings falls back to composition config and restarts only the internal reviewer runtime.
 
 ## Config reference
 
 | Field | Default | Description |
 |---|---|---|
 | `name` | `default` | Account label used in logs and the cursor record key |
+| `uiSettings` | `false` (the bundle's default row sets `true`) | Register the fixed `github-reviewer` Web settings namespace; only one instance may enable it and extra accounts must remain `false` |
 | `appId` | — | GitHub App ID (required in App mode) |
 | `installationId` | — | GitHub App installation ID used to mint installation tokens (required in App mode) |
 | `privateKeyPath` | — | Local PEM private key path for signing GitHub App JWTs (required in App mode) |
@@ -52,7 +58,7 @@ Multiple accounts = another plugin instance with the same `name`, each running i
 | `webUrl` | `https://github.com` | GitHub web URL and MCP `GITHUB_HOST` value |
 | `pollIntervalMs` | `120000` | Interval between PR polling passes |
 | `repositories` | — | Repository allowlist in `owner/repo` form; at least one is required |
-| `workspaceDir` | `$DSH_HOME/github-reviewer/<name>` | Review/chat session directory; registered as a harness workspace (when the `workspace` service is mounted, as in the web profile) so PR sessions group there instead of the ungrouped bucket |
+| `workspaceDir` | `$DSH_HOME/github-reviewer/<name>` | Review/chat session directory; registered as a harness workspace when `@deepseek-ai/dsh-workspace` is mounted (the web profile includes it and it publishes `workspaceRegistry`), so PR sessions group there instead of the ungrouped bucket |
 | `workspaceTitle` | `GithubReviewer` | Display title of that workspace |
 | `review.maxToolCalls` | `30` | Tool-call budget for one review turn; the guard rejects further calls |
 | `review.toolTimeoutMs` | `30000` | Per-tool-call timeout |

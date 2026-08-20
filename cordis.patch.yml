@@ -1,9 +1,12 @@
 # dsh-github-reviewer bundle layer.
 # Installation registers one disabled default instance. Override this row in the
 # profile's cordis.patch.yml with credentials, repositories, MCP configuration,
-# and `disabled: false`; insert additional rows for additional accounts.
+# and `disabled: false`; insert additional rows for additional accounts. The
+# default row alone owns the optional Web settings namespace.
 
 - insert:
     - id: github-reviewer
       name: dsh-github-reviewer
       disabled: true
+      config:
+        uiSettings: true

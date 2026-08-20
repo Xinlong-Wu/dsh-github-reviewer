@@ -94,6 +94,7 @@ The package declares `dsh.bundle`, so `dsh plugin` automatically adds it to the 
   disabled: false
   config:
     name: personal
+    uiSettings: true
     # Either the GitHub App triple (appId/installationId/privateKeyPath)
     # or a personal access token. Avoid a literal token in this file —
     # read it from the environment with a !!js expression instead:
@@ -112,7 +113,9 @@ The package declares `dsh.bundle`, so `dsh plugin` automatically adds it to the 
       #        '--tools=pull_request_read,get_file_contents,pull_request_review_write,add_comment_to_pending_review']
 ```
 
-Multiple accounts = another instance with the same `name` inside the same `- insert:` list (different `id`), each running its own poll loop.
+Multiple accounts = another instance with the same `name` inside the same `- insert:` list (different `id`), each running its own poll loop. Only the default row sets `uiSettings: true`; added accounts must keep it `false` and remain profile-managed.
+
+When the Web profile supplies settings and the matching Client slot, the Settings page shows the GitHub reviewer card. These are optional injected companions: missing settings, workspace, or Client UI dependencies leave only that companion pending and do not block the Host reviewer. Saving the card asynchronously restarts only the reviewer's internal runtime, never the whole DSH process.
 
 **4. Create a PAT** (PAT mode): GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens, scoped to the target repository only, with permissions: Contents: Read, Pull requests: Read & Write, Issues: Read & Write, Checks: Read (Metadata is implicit).
 
@@ -125,4 +128,4 @@ dsh --profile web --dump-config   # print the composed plugin tree; confirm the 
 
 The startup log should show `starting github account=personal repos=1`; open PRs receive a COMMENT review within one poll interval, and commenting `/bot <question>` on a PR talks to the reviewer. Override the default `github-reviewer` row directly; only additional account rows need an `- insert:` wrapper.
 
-Once enabled, review/chat sessions are filed under an auto-registered `GithubReviewer` workspace. The plugin mounts a companion that, through the inject system, activates **at the exact moment the workspace service becomes available**: it creates the directory and registers the workspace, with no polling or retry. In compositions without the service the companion stays idle — no directory or registration work, and the reviewer itself is unaffected. Adjust with `workspaceDir` / `workspaceTitle`. Pre-existing sessions stay in their old workspace; only new sessions use the new directory.
+Once enabled, review/chat sessions are filed under an auto-registered `GithubReviewer` workspace. Through dependency injection, the plugin waits for the `workspaceRegistry` service published by `@deepseek-ai/dsh-workspace`; after that service finishes initialization, a companion fiber creates the directory and registers the workspace with no polling or retry. In compositions without the service, the companion fiber stays idle and performs no directory or registration work, while the reviewer remains active. Adjust with `workspaceDir` / `workspaceTitle`. Pre-existing sessions stay in their old workspace; only new sessions use the new directory.

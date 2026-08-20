@@ -605,6 +605,7 @@ describe('AccountPoller failure paths', () => {
     const reviewGate = new Promise<void>(resolve => { releaseReview = resolve })
     const reviewEntered = new Promise<void>(resolve => { reviewStarted = resolve })
     let disposeResolvedWhileInFlight = false
+    let driverDisposeStarted = false
     const driver: ReviewDriver = {
       driveReview: async () => {
         reviewStarted?.()
@@ -612,15 +613,17 @@ describe('AccountPoller failure paths', () => {
         return { submitted: true, text: 'ok' }
       },
       driveChat: async () => '',
-      dispose: async () => {},
+      dispose: async () => { driverDisposeStarted = true },
     }
     const lines: string[] = []
     const poller = buildPoller(c, driver, lines, { text: 'trusted', source: 'x' })
 
     poller.start()
-    // Wait until the immediate tick is actually blocked inside driveReview.
+    poller.start()
+    // Wait until the single immediate tick is actually blocked inside driveReview.
     await reviewEntered
     const disposed = poller.dispose().then(() => { disposeResolvedWhileInFlight = true })
+    expect(driverDisposeStarted).toBe(true)
     await new Promise(resolve => setTimeout(resolve, 20))
     expect(disposeResolvedWhileInFlight).toBe(false)
     releaseReview?.()

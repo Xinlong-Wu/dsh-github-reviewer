@@ -103,6 +103,10 @@ function summarizeInterval(events: readonly SessionEvent[], firstSeq: number): s
  */
 export class AgentRunner {
   private readonly handles = new Map<string, AgentHandle>()
+  private readonly abortController = new AbortController()
+  private turnTail: Promise<void> = Promise.resolve()
+  private disposed = false
+  private disposal: Promise<void> | undefined
   /** Mutable per-turn context read by the guarded tools and the prompt section. */
   readonly slot: TurnSlot = {}
 
@@ -119,7 +123,7 @@ export class AgentRunner {
    * @returns the submission outcome and the turn's final text.
    */
   async driveReview(pr: PullRequest, instructions: ReviewInstructions, signal: AbortSignal): Promise<ReviewTurnOutcome> {
-    return this.driveTurn(pr, 'review', buildReviewUserPrompt(pr), instructions, signal)
+    return this.enqueueTurn(() => this.driveTurn(pr, 'review', buildReviewUserPrompt(pr), instructions, signal))
   }
 
   /**
@@ -130,16 +134,34 @@ export class AgentRunner {
    * @returns the reply text, or the empty string when nothing was produced.
    */
   async driveChat(pr: PullRequest, message: string, signal: AbortSignal): Promise<string> {
-    const outcome = await this.driveTurn(pr, 'chat', message, undefined, signal)
+    const outcome = await this.enqueueTurn(() => this.driveTurn(pr, 'chat', message, undefined, signal))
     return outcome.text
   }
 
-  /** Dispose every live PR agent, stopping their loops and unwinding scopes. */
-  async dispose(): Promise<void> {
-    this.slot.current = undefined
-    const handles = [...this.handles.values()]
-    this.handles.clear()
-    for (const handle of handles) await handle.dispose()
+  /** Dispose every live PR agent after the active serialized turn settles. */
+  dispose(): Promise<void> {
+    if (this.disposal !== undefined) return this.disposal
+    this.disposed = true
+    this.abortController.abort()
+    for (const handle of this.handles.values()) handle.agent.cancel({ kind: 'user' })
+    this.disposal = this.turnTail.then(async () => {
+      this.slot.current = undefined
+      const handles = [...this.handles.values()]
+      this.handles.clear()
+      for (const handle of handles) await handle.dispose()
+    })
+    return this.disposal
+  }
+
+  /** Queue one turn behind the runner's single mutable guarded-tool slot. */
+  private enqueueTurn<T>(task: () => Promise<T>): Promise<T> {
+    if (this.disposed) return Promise.reject(new Error('github reviewer agent runner is disposed'))
+    const run = this.turnTail.then(async () => {
+      if (this.disposed) throw new Error('github reviewer agent runner is disposed')
+      return task()
+    })
+    this.turnTail = run.then(() => {}, () => {})
+    return run
   }
 
   /** One turn: prepare the slot, wake the agent, await quiescence, flush, summarize. */
@@ -150,19 +172,23 @@ export class AgentRunner {
     instructions: ReviewInstructions | undefined,
     signal: AbortSignal,
   ): Promise<ReviewTurnOutcome> {
+    const turnSignal = AbortSignal.any([signal, this.abortController.signal])
     // The deadline covers the whole turn, including agent creation and the MCP handshake.
     let agent: AgentHandle['agent'] | undefined
-    const deadline = setTimeout(() => agent?.cancel({ kind: 'user' }), this.deps.account.review.timeoutMs)
+    const cancelAgent = (): void => { agent?.cancel({ kind: 'user' }) }
+    turnSignal.addEventListener('abort', cancelAgent, { once: true })
+    const deadline = setTimeout(cancelAgent, this.deps.account.review.timeoutMs)
     deadline.unref()
     let host: McpHost | undefined
     const state = new ReviewGuardState()
     let firstSeq = 0
     try {
-      const handle = await this.ensureAgent(pr, signal)
+      const handle = await this.ensureAgent(pr, turnSignal)
       agent = handle.agent
+      if (turnSignal.aborted) agent.cancel({ kind: 'user' })
       this.renameSession(agent.session, pr)
-      const token = await this.deps.tokenSource.token(signal)
-      host = await this.connectHost(token, signal)
+      const token = await this.deps.tokenSource.token(turnSignal)
+      host = await this.connectHost(token, turnSignal)
       firstSeq = agent.session.seq
       this.slot.current = { pr, flow, state, host, ...instructions === undefined ? {} : { instructions } }
       this.deps.logger.debug(`using shared github pr session repo=${pr.base.repo.owner}/${pr.base.repo.name} number=${pr.number} flow=${flow}`)
@@ -173,6 +199,7 @@ export class AgentRunner {
       await agent.whenIdle()
     } finally {
       clearTimeout(deadline)
+      turnSignal.removeEventListener('abort', cancelAgent)
       this.slot.current = undefined
       if (host !== undefined) await host.close()
     }

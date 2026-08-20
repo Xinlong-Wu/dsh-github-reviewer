@@ -4,10 +4,28 @@ import { access, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { Context } from '@deepseek-ai/cordis'
+import { SettingsProvider, type SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import * as plugin from '../src/index.ts'
 import type { Config } from '../src/config.ts'
 
 let dir = ''
+
+class MemorySettings extends SettingsProvider {
+  private readonly doc: Record<string, unknown> = {}
+
+  get writable(): boolean {
+    return true
+  }
+
+  protected load(): Promise<Record<string, unknown>> {
+    return Promise.resolve(structuredClone(this.doc))
+  }
+
+  protected persist(ns: SettingsNamespace, section: Record<string, unknown>): Promise<void> {
+    this.doc[ns] = structuredClone(section)
+    return Promise.resolve()
+  }
+}
 
 afterEach(async () => {
   vi.unstubAllGlobals()
@@ -168,13 +186,64 @@ describe('plugin wiring through a real Cordis context', () => {
     expect(fiber.state).toBe(4) // FiberState.DISPOSED (const enum, not usable as a runtime value)
   })
 
-  it('registers the review workspace when the workspace service is mounted', async () => {
+  it('keeps reviewer core active when optional settings is absent', async () => {
+    const keyPath = await tempKeyPath()
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      if (String(url).includes('/access_tokens')) {
+        return new Response(JSON.stringify({ token: 'tok', expires_at: '2099-01-01T00:00:00Z' }), { status: 201 })
+      }
+      return new Response('[]', { status: 200 })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const ctx = new Context()
+    provideCoreServices(ctx)
+
+    const fiber = await ctx.plugin(plugin, validConfig(keyPath, { uiSettings: true }))
+
+    await vi.waitFor(() => {
+      expect(fetchMock.mock.calls.some(call => String(call[0]).includes('/repos/owner/repo/pulls'))).toBe(true)
+    })
+    expect(ctx.get('settings')).toBeUndefined()
+    await fiber.dispose()
+  })
+
+  it('restarts from optional settings and falls back when its provider detaches', async () => {
+    const keyPath = await tempKeyPath()
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      if (String(url).includes('/access_tokens')) {
+        return new Response(JSON.stringify({ token: 'tok', expires_at: '2099-01-01T00:00:00Z' }), { status: 201 })
+      }
+      return new Response('[]', { status: 200 })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const ctx = new Context()
+    provideCoreServices(ctx)
+    const settingsFiber = await ctx.plugin(MemorySettings)
+    const reviewerFiber = await ctx.plugin(plugin, validConfig(keyPath, { uiSettings: true }))
+
+    expect(ctx.settings.describe().some(entry => entry.ns === plugin.GITHUB_REVIEWER_SETTINGS_NAMESPACE)).toBe(true)
+    await ctx.settings.update(plugin.GITHUB_REVIEWER_SETTINGS_NAMESPACE, { repositories: ['other/repo'] })
+    await vi.waitFor(() => {
+      expect(fetchMock.mock.calls.some(call => String(call[0]).includes('/repos/other/repo/pulls'))).toBe(true)
+    })
+
+    const oldCalls = fetchMock.mock.calls.filter(call => String(call[0]).includes('/repos/owner/repo/pulls')).length
+    await settingsFiber.dispose()
+    await vi.waitFor(() => {
+      const next = fetchMock.mock.calls.filter(call => String(call[0]).includes('/repos/owner/repo/pulls')).length
+      expect(next).toBeGreaterThan(oldCalls)
+    })
+
+    await reviewerFiber.dispose()
+  })
+
+  it('registers the review workspace when workspaceRegistry is mounted', async () => {
     const keyPath = await tempKeyPath()
     const create = vi.fn(async () => ({}))
     vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', { status: 200 })))
     const ctx = new Context()
     provideCoreServices(ctx)
-    ctx.provide('workspace', { create })
+    ctx.provide('workspaceRegistry', { create })
     const fiber = await ctx.plugin(plugin, validConfig(keyPath, { workspaceDir: join(dir, 'ws') }))
     await vi.waitFor(() => expect(create).toHaveBeenCalled())
     expect(create).toHaveBeenCalledWith(join(dir, 'ws'), 'GithubReviewer')
@@ -182,20 +251,20 @@ describe('plugin wiring through a real Cordis context', () => {
     expect(fiber.state).toBe(4)
   })
 
-  it('creates the workspace dir and registers when the workspace service appears', async () => {
+  it('creates the workspace dir and registers when workspaceRegistry appears', async () => {
     const keyPath = await tempKeyPath()
     vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', { status: 200 })))
     const ctx = new Context()
     provideCoreServices(ctx)
     const fiber = await ctx.plugin(plugin, validConfig(keyPath, { workspaceDir: join(dir, 'ws') }))
     await vi.waitFor(() => expect(fiber.state).toBe(2)) // FiberState.ACTIVE
-    // No workspace service yet: the companion plugin stays pending, so neither
+    // No workspace registry yet: the companion fiber stays pending, so neither
     // the directory nor a registration exists.
     await expect(access(join(dir, 'ws'))).rejects.toThrow()
-    // The workspace service arrives late: the companion activates (inject-based
-    // wait, no polling), creating the directory and registering.
+    // The registry arrives late: the companion activates through dependency
+    // injection, creates the directory, and registers it.
     const create = vi.fn(async () => ({}))
-    ctx.provide('workspace', { create })
+    ctx.provide('workspaceRegistry', { create })
     await vi.waitFor(() => expect(create).toHaveBeenCalled(), { timeout: 5000 })
     expect(create).toHaveBeenCalledWith(join(dir, 'ws'), 'GithubReviewer')
     await vi.waitFor(async () => { await access(join(dir, 'ws')) })
@@ -208,7 +277,7 @@ describe('plugin wiring through a real Cordis context', () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', { status: 200 })))
     const ctx = new Context()
     provideCoreServices(ctx)
-    ctx.provide('workspace', {
+    ctx.provide('workspaceRegistry', {
       create: vi.fn(async () => { throw new Error('workspace backend unavailable') }),
     })
     const fiber = await ctx.plugin(plugin, validConfig(keyPath, { workspaceDir: join(dir, 'ws') }))
@@ -217,18 +286,36 @@ describe('plugin wiring through a real Cordis context', () => {
     expect(fiber.state).toBe(4)
   })
 
-  it('does nothing to the workspace when the service is absent', async () => {
+  it('does nothing to the workspace when workspaceRegistry is absent', async () => {
     const keyPath = await tempKeyPath()
     vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', { status: 200 })))
     const ctx = new Context()
     provideCoreServices(ctx)
     const fiber = await ctx.plugin(plugin, validConfig(keyPath, { workspaceDir: join(dir, 'ws') }))
     await vi.waitFor(() => expect(fiber.state).toBe(2)) // FiberState.ACTIVE
-    // The companion stays pending without the service: no directory, no
+    // The companion stays pending without the registry: no directory, no
     // registration — and the reviewer itself is unaffected.
     await expect(access(join(dir, 'ws'))).rejects.toThrow()
     await fiber.dispose()
     expect(fiber.state).toBe(4)
+  })
+
+  it('disposes the pending workspace companion with the reviewer', async () => {
+    const keyPath = await tempKeyPath()
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', { status: 200 })))
+    const ctx = new Context()
+    provideCoreServices(ctx)
+    const workspaceDir = join(dir, 'ws')
+    const fiber = await ctx.plugin(plugin, validConfig(keyPath, { workspaceDir }))
+    await vi.waitFor(() => expect(fiber.state).toBe(2)) // FiberState.ACTIVE
+    await fiber.dispose()
+
+    const create = vi.fn(async () => ({}))
+    ctx.provide('workspaceRegistry', { create })
+    await new Promise(resolve => setTimeout(resolve, 20))
+
+    expect(create).not.toHaveBeenCalled()
+    await expect(access(workspaceDir)).rejects.toThrow()
   })
 
   it('activates with review.models configured; model resolution is deferred to session creation', async () => {

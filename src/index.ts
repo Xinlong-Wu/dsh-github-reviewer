@@ -1,33 +1,42 @@
 /**
  * `dsh-github-reviewer`: a DeepSeek Harness plugin that polls configured
  * GitHub repositories for open pull requests and posts automated COMMENT
- * reviews, ported from LingoBridge's GitHub platform and driven through the
- * harness agent loop: one live Agent per PR, one session log per PR, durable
- * through the harness session-persistence seam.
- *
- * The deployment must mount the agent-loop family (`agents`, `sessions`, and
- * — for restart-safe per-PR sessions — a `sessionPersistence` provider);
- * see README for the required composition rows.
+ * reviews through one persistent harness Agent and session per PR.
  * @module dsh-github-reviewer
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import { mkdir } from 'node:fs/promises'
 import type {} from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-agent-default-model'
 import type {} from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-session-persistence'
 import type {} from '@deepseek-ai/dsh-storage-domain'
-import { AgentRunner } from './agent-runner.ts'
-import { AppTokenSource, StaticTokenSource } from './github/auth.ts'
-import { GitHubClient } from './github/client.ts'
-import { Config, normalizeAccountConfig, validateAccountRuntime } from './config.ts'
-import type { Config as PluginConfig } from './config.ts'
-import { cursorDomainSpec, StorageDomainCursorStore } from './cursor-store.ts'
-import { AccountPoller, cordisLogger } from './poller.ts'
+import type {} from '@deepseek-ai/dsh-workspace'
+import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
+import {
+  accountWithReviewerSettings,
+  Config,
+  normalizeAccountConfig,
+  ReviewerSettingsSchema,
+  reviewerSettingsOf,
+  validateAccountRuntime,
+  validateReviewerSettings,
+} from './config.ts'
+import type { Config as PluginConfig, ReviewerSettings } from './config.ts'
+import { StaticTokenSource } from './github/auth.ts'
+import { cordisLogger } from './poller.ts'
+import { ReviewerRestartController } from './restart-controller.ts'
+import { WorkspaceCoordinator } from './workspace-coordinator.ts'
 
 export { Config }
-export type { Config as GithubReviewerConfig, McpConfig, ResolvedAccountConfig, ReviewConfig, ReviewModel } from './config.ts'
+export type {
+  Config as GithubReviewerConfig,
+  McpConfig,
+  ResolvedAccountConfig,
+  ReviewConfig,
+  ReviewerSettings,
+  ReviewModel,
+} from './config.ts'
 export type { ReviewGuardState, TurnSlot } from './github/guard.ts'
 export type { PullRequest, Repository, ReviewInstructions } from './github/model.ts'
 export { StaticTokenSource }
@@ -37,129 +46,88 @@ export type { ReviewDriver } from './poller.ts'
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'github-reviewer'
 
-/** Services required by this plugin: agent registry, session store, deployment-owned default model, and the storage domain. */
+/** Required core services; settings and workspace remain optional companions. */
 export const inject = ['agents', 'sessions', 'agentDefaultModel', 'storageDomain']
 
-/** Account names currently active in this process, to catch duplicate-instance misconfiguration. */
-const activeAccounts = new Set<string>()
+/** Fixed namespace owned by the one instance opting into the Web settings card. */
+export const GITHUB_REVIEWER_SETTINGS_NAMESPACE = settingsNamespace('github-reviewer')
 
-/**
- * Start the poll loop for this instance's account (mount the plugin once per
- * account). The account's configuration is validated and its private key
- * loaded before activation: misconfiguration fails the plugin at load instead
- * of skipping reviews silently. One live Agent per PR is created on first
- * contact and resumed from session persistence after a restart when a
- * persistence provider is mounted.
- * @param ctx - plugin context carrying the agent registry and session store.
- * @param config - resolved plugin configuration for this account.
- * @returns activation after the account's cursor state has loaded.
- */
-export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
-  const account = normalizeAccountConfig(config)
-  validateAccountRuntime(account.name, account)
-  if (activeAccounts.has(account.name)) {
+/** Account-name leases prevent concurrent instances from sharing cursor/session identities. */
+const activeAccounts = new Map<string, symbol>()
+
+function acquireAccount(name: string): symbol {
+  if (activeAccounts.has(name)) {
     throw new Error(
-      `github-reviewer.${account.name} is already active in this process; `
-      + 'two instances with the same account name would share one cursor record',
+      `github-reviewer.${name} is already active in this process; `
+      + 'two instances with the same account name would share cursor and session identities',
     )
   }
-
-  // PAT mode needs no key file; App mode validates the private key eagerly so
-  // a bad key fails at load, not on the first review.
-  const tokenSource = account.personalAccessToken !== ''
-    ? new StaticTokenSource(account.personalAccessToken)
-    : await AppTokenSource.fromFile(
-      account.appId,
-      account.installationId,
-      account.privateKeyPath,
-      account.baseUrl,
-    )
-  const client = new GitHubClient(account.baseUrl, tokenSource)
-  const domain = await ctx.storageDomain.open(cursorDomainSpec)
-  try {
-    const store = new StorageDomainCursorStore(domain.table('accounts'), account.name)
-    await store.load()
-
-    const logger = cordisLogger(ctx.logger)
-
-    ctx.effect(() => {
-      // Read the optional services inside the effect so the wiring does not
-      // depend on plugin mount order at apply time.
-      const sessionPersistence = ctx.get('sessionPersistence')
-      const sessionTitle = ctx.get('sessionTitle')
-      const llm = ctx.get('llm')
-      const runner = new AgentRunner({
-        accountName: account.name,
-        account,
-        agents: ctx.agents,
-        sessions: ctx.sessions,
-        agentDefaultModel: ctx.agentDefaultModel,
-        ...llm === undefined ? {} : { llm },
-        ...sessionTitle === undefined ? {} : { sessionTitle },
-        ...sessionPersistence === undefined ? {} : { sessionPersistence },
-        tokenSource,
-        logger,
-      })
-      const poller = new AccountPoller({
-        accountName: account.name,
-        account,
-        client,
-        tokenSource,
-        store,
-        driver: runner,
-        logger,
-      })
-      poller.start()
-      activeAccounts.add(account.name)
-      logger.info(`starting github account=${account.name} repos=${account.repositories.length} poll_interval_ms=${account.pollIntervalMs}`)
-
-      // Workspace setup: when the composition declares the `workspace`
-      // service, mount a companion plugin that injects it. The inject system
-      // is the wait — the companion activates exactly when the workspace
-      // service becomes available (its init can take tens of seconds), then
-      // creates the review-session directory and registers it. No polling, no
-      // retry. Mounted unconditionally: in compositions without the workspace
-      // service it simply stays pending — a sub-plugin mounted via ctx.plugin
-      // is not a loader entry, so a pending companion can never block the boot
-      // audit, and it does nothing until the service exists.
-      void (async () => {
-        try {
-          await ctx.plugin({
-            name: `github-reviewer-workspace-${account.name}`,
-            inject: ['workspace'],
-            apply: (workspaceCtx: Context) => {
-              void (async () => {
-                try {
-                  await mkdir(account.workspaceDir, { recursive: true })
-                } catch (error) {
-                  logger.warn(`github reviewer workspace dir creation failed: ${String(error)}`)
-                }
-                try {
-                  const workspace = workspaceCtx.get('workspace') as { create(path: string, title: string): Promise<unknown> } | undefined
-                  if (workspace !== undefined) {
-                    await workspace.create(account.workspaceDir, account.workspaceTitle)
-                    logger.info(`registered github reviewer workspace title=${account.workspaceTitle} dir=${account.workspaceDir}`)
-                  }
-                } catch (error) {
-                  logger.warn(`github reviewer workspace registration failed: ${String(error)}`)
-                }
-              })()
-            },
-          })
-        } catch (error) {
-          logger.warn(`github reviewer workspace setup mount failed: ${String(error)}`)
-        }
-      })()
-
-      return async () => {
-        activeAccounts.delete(account.name)
-        await poller.dispose()
-        await domain.close()
-      }
-    }, `github-reviewer.${account.name}`)
-  } catch (error) {
-    await domain.close()
-    throw error
-  }
+  const lease = Symbol(name)
+  activeAccounts.set(name, lease)
+  return lease
 }
 
+function releaseAccount(name: string, lease: symbol): void {
+  if (activeAccounts.get(name) === lease) activeAccounts.delete(name)
+}
+
+/**
+ * Start the composition-configured runtime, then attach optional settings and
+ * workspace companions without making either service a core dependency.
+ */
+export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
+  const baseAccount = normalizeAccountConfig(config)
+  validateAccountRuntime(baseAccount.name, baseAccount)
+  const accountLease = acquireAccount(baseAccount.name)
+  const logger = cordisLogger(ctx.logger)
+  const workspace = new WorkspaceCoordinator(logger)
+  const controller = ReviewerRestartController.production(
+    ctx,
+    logger,
+    account => { workspace.request(account) },
+  )
+  let installed = false
+
+  try {
+    ctx.inject(['workspaceRegistry'], (workspaceCtx) => {
+      const detach = workspace.attach(workspaceCtx.workspaceRegistry)
+      return detach
+    })
+
+    await controller.start(baseAccount)
+
+    if (baseAccount.uiSettings) {
+      let source: () => ReviewerSettings = () => reviewerSettingsOf(baseAccount)
+      installSettingsSection(
+        ctx,
+        GITHUB_REVIEWER_SETTINGS_NAMESPACE,
+        ReviewerSettingsSchema,
+        reviewerSettingsOf(baseAccount),
+        {
+          validate: value => { validateReviewerSettings(baseAccount, value) },
+          setSource: current => { source = current },
+          onChange: () => {
+            try {
+              controller.request(accountWithReviewerSettings(baseAccount, source()))
+            } catch (error) {
+              logger.warn(`github reviewer settings resolution failed: ${String(error)}`)
+            }
+          },
+        },
+      )
+    }
+
+    ctx.effect(() => async () => {
+      await controller.dispose()
+      await workspace.dispose()
+      releaseAccount(baseAccount.name, accountLease)
+    }, `github-reviewer.${baseAccount.name}`)
+    installed = true
+  } finally {
+    if (!installed) {
+      await controller.dispose()
+      await workspace.dispose()
+      releaseAccount(baseAccount.name, accountLease)
+    }
+  }
+}

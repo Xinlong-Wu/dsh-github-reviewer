@@ -21,6 +21,7 @@
 - 守卫每一次工具调用：调用必须指向当前 PR，读取被限制在允许的方法和 ref，写入被限制在 `create` → 行内评论 → `submit_pending(event=COMMENT)` 的 pending-review 工作流。
 - 处理已处理 PR 上的评论命令：`/review` 触发重新评审，`/bot <消息>` 继续 PR 对话并把回复发回对应的 issue 线程或 review 线程。
 - 评审中断可续跑：`reviewing` 游标状态在重启后重新触发评审，从持久化会话恢复剩余工作。
+- 默认实例可启用 Web 设置卡片；保存后只热重启内部 reviewer runtime。settings、工作区与 Client UI 都是可选 inject 伴生能力，缺失时不影响 Host reviewer。
 - 在把不可信 PR 标题/正文放入提示词前做清洗（HTML 注释/隐藏属性、不可见/控制字符、markdown 图片 alt 文本、markdown 链接标题、类 GitHub 令牌字符串）。
 
 ## 快速开始
