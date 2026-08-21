@@ -33,7 +33,9 @@ const account: ResolvedAccountConfig = {
   webUrl: 'https://github.com',
   pollIntervalMs: 120_000,
   repositories: ['owner/repo'],
-  review: { maxToolCalls: 30, toolTimeoutMs: 5000, toolResultLimit: 60000, timeoutMs: 30_000, defaultInstructions: '' },
+  workspaceDir: '/tmp/ghr-workspace',
+  workspaceTitle: 'GithubReviewer',
+  review: { maxToolCalls: 30, toolTimeoutMs: 5000, toolResultLimit: 60000, timeoutMs: 30_000, defaultInstructions: '', models: [] },
   mcp: { command: 'github-mcp-server', args: ['stdio'], env: {}, cwd: '' },
 }
 
@@ -144,6 +146,15 @@ interface MakeRunnerOptions {
   account?: ResolvedAccountConfig
   /** MCP host factory override; `null` disables the fake so the real StdioMcpHost.connect is used. */
   hostFactory?: ((token: string, signal: AbortSignal) => Promise<McpHost>) | null
+  /** `llm` service mock used by `review.models` resolution. */
+  llm?: { listModels(provider: string): Promise<Array<{ id: string }>> }
+  /** Session-title service mock. */
+  sessionTitle?: {
+    get: ReturnType<typeof vi.fn>
+    rename: ReturnType<typeof vi.fn>
+  }
+  /** Notification after a fresh or resumed reviewer session is live. */
+  onSessionReady?: (sessionId: string) => void
 }
 
 function makeRunner(world: World, sessionPersistence?: { listSnapshots: () => Promise<Array<{ header: { id: string } }>> }, options: MakeRunnerOptions = {}) {
@@ -156,6 +167,9 @@ function makeRunner(world: World, sessionPersistence?: { listSnapshots: () => Pr
       resume: world.resume,
     } as unknown as AgentRegistry,
     agentDefaultModel: { currentSelection: () => ({ provider: 'deepseek', model: 'deepseek-chat' }) },
+    ...options.llm === undefined ? {} : { llm: options.llm },
+    ...options.sessionTitle === undefined ? {} : { sessionTitle: options.sessionTitle },
+    ...options.onSessionReady === undefined ? {} : { onSessionReady: options.onSessionReady },
     sessions: { flush: vi.fn(async () => true) } as unknown as SessionStore,
     ...sessionPersistence === undefined ? {} : { sessionPersistence: sessionPersistence as never },
     tokenSource: { token: async () => 'tok' },
@@ -180,7 +194,8 @@ function makeRunner(world: World, sessionPersistence?: { listSnapshots: () => Pr
 describe('AgentRunner agent lifecycle', () => {
   it('creates one agent per PR and reuses it across review and chat turns', async () => {
     const world = makeWorld()
-    const { runner } = makeRunner(world)
+    const onSessionReady = vi.fn()
+    const { runner } = makeRunner(world, undefined, { onSessionReady })
     const signal = new AbortController().signal
 
     const reviewPromise = runner.driveReview(pr, { text: 'trusted', source: 'x' }, signal)
@@ -194,17 +209,115 @@ describe('AgentRunner agent lifecycle', () => {
     expect(world.create).toHaveBeenCalledTimes(1)
     expect(world.resume).not.toHaveBeenCalled()
     expect(world.fakeHandle.agent.followup).toHaveBeenCalledTimes(2)
+    expect(onSessionReady).toHaveBeenCalledTimes(2)
+    expect(onSessionReady).toHaveBeenNthCalledWith(1, 'github:reviewer:owner:repo:pr:42')
+    expect(onSessionReady).toHaveBeenNthCalledWith(2, 'github:reviewer:owner:repo:pr:42')
     expect((world.createOptions[0] as { sessionId: string }).sessionId).toBe('github:reviewer:owner:repo:pr:42')
+    expect((world.createOptions[0] as { meta: { cwd: string } }).meta.cwd).toBe(account.workspaceDir)
     expect((world.createOptions[0] as { agentOptions: unknown }).agentOptions).toEqual({ provider: 'deepseek', model: 'deepseek-chat' })
     await runner.dispose()
     expect(world.fakeHandle.handle.dispose).toHaveBeenCalledTimes(1)
+  })
+
+  it('pins a uniform session title for each PR, once', async () => {
+    const world = makeWorld()
+    let titled = false
+    const get = vi.fn(() => (titled ? { title: 'Review owner/repo PR 42' } : undefined))
+    const rename = vi.fn((_session: unknown, _title: string) => { titled = true; return {} })
+    const { runner } = makeRunner(world, undefined, { sessionTitle: { get, rename } })
+    const signal = new AbortController().signal
+
+    const review1 = runner.driveReview(pr, { text: 'trusted', source: 'x' }, signal)
+    world.fakeHandle.resolveTurn()
+    await review1
+    const chat = runner.driveChat(pr, 'what changed?', signal)
+    world.fakeHandle.resolveTurn()
+    await chat
+
+    // Review turn pins the title; the chat turn on the same session skips it.
+    expect(rename).toHaveBeenCalledTimes(1)
+    expect(rename).toHaveBeenCalledWith(expect.anything(), 'Review owner/repo PR 42')
+    await runner.dispose()
+  })
+
+  it('resolves the first available review.model at session creation', async () => {
+    const world = makeWorld()
+    const llm = {
+      listModels: async (provider: string) => {
+        if (provider === 'prov-a') return [{ id: 'model-a' }, { id: 'other' }]
+        throw new Error(`unknown provider ${provider}`)
+      },
+    }
+    const { runner } = makeRunner(world, undefined, {
+      account: { ...account, review: { ...account.review, models: [{ provider: 'prov-a', model: 'model-a' }, { provider: 'prov-b', model: 'model-b' }] } },
+      llm,
+    })
+    const signal = new AbortController().signal
+
+    const reviewPromise = runner.driveReview(pr, { text: 'trusted', source: 'x' }, signal)
+    world.fakeHandle.resolveTurn()
+    await reviewPromise
+
+    expect((world.createOptions[0] as { agentOptions: unknown }).agentOptions).toEqual({ provider: 'prov-a', model: 'model-a' })
+    await runner.dispose()
+  })
+
+  it('aborts the review when none of the review.models is available', async () => {
+    const world = makeWorld()
+    const llm = { listModels: async () => { throw new Error('unknown provider') } }
+    const { runner } = makeRunner(world, undefined, {
+      account: { ...account, review: { ...account.review, models: [{ provider: 'prov-a', model: 'model-a' }] } },
+      llm,
+    })
+    const signal = new AbortController().signal
+
+    await expect(runner.driveReview(pr, { text: 'trusted', source: 'x' }, signal)).rejects.toThrow(
+      'none of the configured review.models is available',
+    )
+    expect(world.create).not.toHaveBeenCalled()
+    await runner.dispose()
+  })
+
+  it('aborts the review when review.models is configured but the llm service is missing', async () => {
+    const world = makeWorld()
+    const { runner } = makeRunner(world, undefined, {
+      account: { ...account, review: { ...account.review, models: [{ provider: 'prov-a', model: 'model-a' }] } },
+    })
+    const signal = new AbortController().signal
+
+    await expect(runner.driveReview(pr, { text: 'trusted', source: 'x' }, signal)).rejects.toThrow(
+      'does not mount the llm service',
+    )
+    expect(world.create).not.toHaveBeenCalled()
+    await runner.dispose()
+  })
+
+  it('discovers the guarded tool schemas once and reuses them across PRs', async () => {
+    const world = makeWorld()
+    const { runner, hosts } = makeRunner(world)
+    const signal = new AbortController().signal
+    const pr2 = { ...pr, number: 43 }
+
+    const review1 = runner.driveReview(pr, { text: 'trusted', source: 'x' }, signal)
+    world.fakeHandle.resolveTurn()
+    await review1
+    const review2 = runner.driveReview(pr2, { text: 'trusted', source: 'x' }, signal)
+    world.fakeHandle.resolveTurn()
+    await review2
+
+    expect(world.create).toHaveBeenCalledTimes(2)
+    // 1 schema-discovery host + 1 per-turn host per review; without the
+    // schema cache there would be a second discovery host (4 total).
+    expect(hosts).toHaveLength(3)
+    await runner.dispose()
   })
 
   it('resumes a persisted PR session instead of creating a fresh one', async () => {
     const world = makeWorld()
     const sessionId = 'github:reviewer:owner:repo:pr:42'
     const persistence = { listSnapshots: vi.fn(async () => [{ header: { id: sessionId } }]) }
-    const { runner } = makeRunner(world, persistence)
+    const onSessionReady = vi.fn()
+    const { runner } = makeRunner(world, persistence, { onSessionReady })
     const signal = new AbortController().signal
 
     const promise = runner.driveReview(pr, { text: 'trusted', source: 'x' }, signal)
@@ -213,6 +326,8 @@ describe('AgentRunner agent lifecycle', () => {
 
     expect(world.resume).toHaveBeenCalledTimes(1)
     expect(world.create).not.toHaveBeenCalled()
+    expect(onSessionReady).toHaveBeenCalledOnce()
+    expect(onSessionReady).toHaveBeenCalledWith(sessionId)
     expect((world.resumeOptions[0] as { resumeSessionId: string }).resumeSessionId).toBe(sessionId)
     await runner.dispose()
   })
@@ -380,6 +495,17 @@ describe('AgentRunner turn deadline', () => {
     expect(hosts[hosts.length - 1].closed).toBe(true)
     expect(runner.slot.current).toBeUndefined()
     await runner.dispose()
+  })
+})
+
+describe('AgentRunner lifecycle', () => {
+  it('rejects new turns after disposal begins', async () => {
+    const world = makeWorld()
+    const { runner } = makeRunner(world)
+
+    await runner.dispose()
+
+    await expect(runner.driveChat(pr, 'hello', new AbortController().signal)).rejects.toThrow(/disposed/)
   })
 })
 

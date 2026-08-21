@@ -2,253 +2,47 @@
 
 [English](README.en.md) | 中文
 
-[![npm version](https://img.shields.io/npm/v/@xinlongwu/dsh-github-reviewer)](https://www.npmjs.com/package/@xinlongwu/dsh-github-reviewer)
+[![npm version](https://img.shields.io/npm/v/dsh-github-reviewer)](https://www.npmjs.com/package/dsh-github-reviewer)
 [![CI](https://github.com/Xinlong-Wu/dsh-github-reviewer/actions/workflows/ci.yml/badge.svg)](https://github.com/Xinlong-Wu/dsh-github-reviewer/actions/workflows/ci.yml)
-[![license](https://img.shields.io/npm/l/@xinlongwu/dsh-github-reviewer)](https://github.com/Xinlong-Wu/dsh-github-reviewer/blob/main/LICENSE)
-[![node](https://img.shields.io/node/v/@xinlongwu/dsh-github-reviewer)](https://nodejs.org)
+[![license](https://img.shields.io/npm/l/dsh-github-reviewer)](https://github.com/Xinlong-Wu/dsh-github-reviewer/blob/main/LICENSE)
+[![node](https://img.shields.io/node/v/dsh-github-reviewer)](https://nodejs.org)
 
 一个 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 插件：轮询配置的 GitHub 仓库中开放的 pull request，并自动发布 `COMMENT` 评审。它是 [LingoBridge](https://github.com/Xinlong-Wu/LingoBridge) 内置 GitHub reviewer 的 TypeScript 移植，并且每次评审和 `/bot` 对话都通过 **harness agent 主循环**驱动：每个 PR 一个常驻 Agent、每个 PR 一条会话日志，通过 harness 的 session-persistence 机制持久化。
 
 ## 功能特性
 
 - 轮询配置的仓库中的开放 PR；跳过 draft PR。
-- 以 GitHub App 身份认证：签名 RS256 应用 JWT，换取短期安装访问令牌（临近过期前缓存复用）。
+- 以 GitHub App 身份认证：签名 RS256 应用 JWT，换取短期安装访问令牌（临近过期前缓存复用）；也可用个人访问令牌（PAT）模式。
 - PR 首次出现或 `head.sha` 变化时触发评审；未变化的 PR 记录在存储域的每账户游标记录中，不会重复评审。
-- 只从基础仓库的 `.github/review_instructions.md` 读取可信评审指令（先按 base 分支，再按 base SHA）。文件缺失且配置了 `defaultInstructions` 时使用该默认文本；否则该 PR 被标记为 `missing_instructions`，仅当 head SHA 变化后才重试。
+- 只从基础仓库的 `.github/review_instructions.md` 读取可信评审指令（先按 base 分支，再按 base SHA）；文件缺失且配置了 `defaultInstructions` 时使用该默认文本，否则该 PR 被标记为 `missing_instructions`，仅当 head SHA 变化后才重试。
 - **每个 PR 一个 harness Agent 与会话。** 同一 PR 的评审和 `/bot` 对话在同一个会话中进行，主循环会重放该 PR 的完整对话历史——模型记得之前的发现和讨论。挂载了持久化 provider 时，会话跨重启保留，评审器恢复既有会话而非新建。
 - 评审走真实 agent 主循环：评审系统提示以 `complete` 系统提示段注册在 PR agent 上，被守卫的 GitHub 工具以作用域工具形式注册——主循环的日志、检查点、压缩全部生效。
-- 每个回合启动一个全新的 `github-mcp-server`（stdio），注入安装令牌为 `GITHUB_PERSONAL_ACCESS_TOKEN`，配置的 web URL 为 `GITHUB_HOST`。首次接触某 PR 时会额外短暂启动一次 MCP server 用于工具 schema 发现，之后每个回合一台全新 server。
+- 每个回合启动一个全新的 `github-mcp-server`（stdio），注入安装令牌为 `GITHUB_PERSONAL_ACCESS_TOKEN`，配置的 web URL 为 `GITHUB_HOST`；工具 schema 每进程发现一次并缓存。
 - 守卫每一次工具调用：调用必须指向当前 PR，读取被限制在允许的方法和 ref，写入被限制在 `create` → 行内评论 → `submit_pending(event=COMMENT)` 的 pending-review 工作流。
 - 处理已处理 PR 上的评论命令：`/review` 触发重新评审，`/bot <消息>` 继续 PR 对话并把回复发回对应的 issue 线程或 review 线程。
+- 评审中断可续跑：`reviewing` 游标状态在重启后重新触发评审，从持久化会话恢复剩余工作。
+- 默认实例可启用 Web 设置卡片；保存后只热重启内部 reviewer runtime。settings、工作区与 Client UI 都是可选 inject 伴生能力，缺失时不影响 Host reviewer。
 - 在把不可信 PR 标题/正文放入提示词前做清洗（HTML 注释/隐藏属性、不可见/控制字符、markdown 图片 alt 文本、markdown 链接标题、类 GitHub 令牌字符串）。
 
-## 部署要求
-
-插件注入 harness 的 `agents`、`sessions` 与 `agentDefaultModel` 服务，因此部署必须挂载 agent-loop 家族。除 `github-reviewer` 外，最小可用组合至少需要以下条目（完整带注释示例见 [cordis.yml.example](./cordis.yml.example)）：
-
-```yaml
-- id: llm-deepseek          # 任意 LLM adapter
-  name: '@deepseek-ai/dsh-llm-deepseek'
-  config: { thinking: enabled, models: [{ id: deepseek-chat, contextWindow: 128000 }] }
-- id: agent-spine           # agent 主循环 + 系统提示组装 + 工具管道
-  name: '@deepseek-ai/dsh-agent-spine-demo'
-  config:
-    agents: [{ id: main, provider: deepseek-official, model: deepseek-chat, cwd: !!js process.cwd() }]
-- id: persistence           # 跨重启的每 PR 会话
-  name: '@deepseek-ai/dsh-session-persistence-jsonl'
-  config: { root: './.sessions' }
-- id: storage               # storage hub（storage-json 与 storage-domain 都依赖它）
-  name: '@deepseek-ai/dsh-storage'
-- id: storage-json          # 游标存储后端（JSON 文件）
-  name: '@deepseek-ai/dsh-storage-json'
-  config: { root: './.storage' }
-- id: storage-domain        # 游标存储域（dsh_github_reviewer）
-  name: '@deepseek-ai/dsh-storage-domain'
-  config: { backend: json }
-- id: agent-default-model   # 所有评审 agent 的默认模型选择
-  name: '@deepseek-ai/dsh-agent-default-model'
-  config: { provider: deepseek-official, model: deepseek-chat }
-```
-
-- **模型不由插件配置**：每个评审 agent 使用部署的默认模型选择（`agentDefaultModel`），它由 `@deepseek-ai/dsh-agent-default-model` 单独提供（config 需 `{ provider, model }`），并非来自 agent-spine 家族。
-- **依赖不满足时插件不会激活**：cordis 依赖缺失时 fiber 会一直处于 PENDING、插件静默不激活——因此上面的 `agent-default-model` 行与整套存储行（`storage` hub、`storage-json` 后端、`storage-domain`）都是必需的。
-- **游标需要存储域**：`dsh_github_reviewer` 域由 `@deepseek-ai/dsh-storage-domain` 提供，需要挂一个后端（`@deepseek-ai/dsh-storage-json` 或 `@deepseek-ai/dsh-storage-sqlite`）并在 storage-domain 配置里路由（例如 `backend: json` 或 `backend: sqlite`）。未挂载时插件在加载期报错。
-- **没有 `sessionPersistence`**：评审器仍可用，但 PR 会话只在内存中——重启后每个 PR 从全新会话开始。
-- **有 `sessionPersistence`**：每个回合都会被检查点化，重启后评审器恢复已持久化的 PR 会话（同一个 PR 不会创建第二个会话）。
-- PR 会话与交互式会话共用同一个会话存储，因此评审在 harness 会话界面里可见、可回放。
-
-## 安装
+## 快速开始
 
 ```sh
-npm install @xinlongwu/dsh-github-reviewer
+dsh plugin --profile web add dsh-github-reviewer
 ```
 
-peer 依赖：`@deepseek-ai/cordis`（harness 的 Cordis 运行时）。
+安装会把 bundle 加入 web profile，并注册一个默认启用的 `github-reviewer` 实例；`uiSettings` 默认也是 `true`。在下一次重启前，必须在 profile 的 `cordis.patch.yml` 中按 `id` 为该实例补齐认证和 MCP server，并按需配置仓库（无需再写 `disabled: false` 或 `uiSettings: true`，完整步骤见[部署与挂载](docs/deploy.md)）。设置页的 **GitHub Reviewer** 卡片默认折叠，仓库以“所有者（组织或用户）/仓库”行编辑：聚焦后会使用当前配置的 GitHub 凭据加载可访问仓库，并提供可搜索、可自由输入的候选菜单；目录加载失败或手动值不在目录中都不会阻止编辑和保存。增删操作使用图标按钮；评审模型从 DSH 当前配置的 provider/model 下拉列表中选择，并按从上到下的优先级拖拽排序。仓库列表可以为空，此时 reviewer 保持运行但不轮询仓库。
 
-### 在运行中的 DSH 实例上启用
+## 文档
 
-假设实例的 profile 目录为 `$DSH_HOME/profiles/web`（`DSH_HOME` 默认为 `~/.dsh`），且组合已包含 storage 链与 agent 循环（官方 `dsh-base` + `dsh-web-app` bundle 自带）。
-
-**1. 安装 GitHub MCP server**（官方 Go 版，工具名与守卫匹配）：
-
-```sh
-# Linux x86_64；其他架构替换资产名
-curl -sL https://github.com/github/github-mcp-server/releases/latest/download/github-mcp-server_Linux_x86_64.tar.gz \
-  | tar -xz -C ~/.local/bin github-mcp-server
-github-mcp-server --version
-```
-
-也可以用容器运行（`ghcr.io/github/github-mcp-server`），此时 `mcp.command` 用 `docker`，见下文注释。
-
-**2. 把插件装进 profile**：
-
-```sh
-cd "$DSH_HOME/profiles/web"
-# 在 package.json 的 dependencies 中加入：
-#   "@xinlongwu/dsh-github-reviewer": "^0.1.0-rc2"
-npx pnpm install
-ls node_modules/@xinlongwu/dsh-github-reviewer/lib/index.js   # 确认安装成功
-```
-
-**3. 在 `$DSH_HOME/profiles/web/cordis.patch.yml` 追加插件行**：
-
-```yaml
-- id: github-reviewer
-  name: '@xinlongwu/dsh-github-reviewer'
-  config:
-    name: personal
-    # 二选一：GitHub App 三件套（appId/installationId/privateKeyPath）
-    # 或个人访问令牌：
-    personalAccessToken: 'github_pat_...'
-    repositories:
-      - 'owner/repo'
-    mcp:
-      command: 'github-mcp-server'
-      args: ['stdio', '--tools=pull_requests,repos,issues']
-      # 容器方案则为：
-      # command: 'docker'
-      # args: ['run', '-i', '--rm', '-e', 'GITHUB_PERSONAL_ACCESS_TOKEN', '-e', 'GITHUB_HOST',
-      #        'ghcr.io/github/github-mcp-server', 'stdio', '--tools=pull_requests,repos,issues']
-```
-
-**4. 创建 PAT**（PAT 模式）：GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens，仅授权目标仓库，权限：Contents: Read、Pull requests: Read & Write、Issues: Read & Write、Checks: Read（Metadata 自动附带）。
-
-**5. 重启实例并验证**：启动日志应出现 `starting github account=personal repos=1`；开放 PR 会在下一个轮询周期收到 COMMENT 评审，PR 下评论 `/bot <问题>` 可与评审器对话。
-
-## 配置
-
-在 harness 的 `cordis.yml` 中挂载插件，**每个账户一个插件实例**（扁平配置、多实例模式）：
-
-```yaml
-- id: github-reviewer-org
-  name: '@xinlongwu/dsh-github-reviewer'
-  config:
-    name: org                             # 账户标签：日志与游标记录键
-    appId: '123456'
-    installationId: '987654'
-    privateKeyPath: '/etc/dsh/github-app.pem'
-    # 或者用个人访问令牌代替上面三个 App 字段（两者互斥）：
-    # personalAccessToken: 'github_pat_...'
-    baseUrl: 'https://api.github.com'      # 可选
-    webUrl: 'https://github.com'           # 可选
-    pollIntervalMs: 120000                 # 可选，默认 2 分钟
-    repositories:
-      - 'owner/repo'
-    review:                                # 全部可选
-      maxToolCalls: 30
-      toolTimeoutMs: 30000
-      toolResultLimit: 60000
-      timeoutMs: 900000
-      defaultInstructions: |
-        Review this pull request for correctness, regressions, security issues,
-        and missing tests. Leave concise inline comments where useful.
-    mcp:
-      command: 'github-mcp-server'
-      args:
-        - 'stdio'
-        - '--tools=pull_request_read,get_file_contents,pull_request_review_write,add_comment_to_pending_review'
-      env: {}                              # 可选；GitHub 令牌自动注入
-      cwd: ''                              # 可选
-```
-
-多账户 = 再挂一行相同 `name` 的插件实例，各自独立轮询。
-
-### 配置参考
-
-| 字段 | 默认值 | 说明 |
+| 主题 | 中文 | English |
 |---|---|---|
-| `name` | `default` | 账户标签，用于日志与游标记录键 |
-| `appId` | — | GitHub App ID（App 模式必填） |
-| `installationId` | — | 用于生成安装令牌的 GitHub App 安装 ID（App 模式必填） |
-| `privateKeyPath` | — | 用于签名 GitHub App JWT 的本地 PEM 私钥路径（App 模式必填） |
-| `personalAccessToken` | — | 个人访问令牌（classic `ghp_` 或 fine-grained `github_pat_`）；设置后与 App 三件套互斥，无需再填 App 字段 |
-| `baseUrl` | `https://api.github.com` | GitHub REST API 基础 URL |
-| `webUrl` | `https://github.com` | GitHub web URL 及 MCP 的 `GITHUB_HOST` 值 |
-| `pollIntervalMs` | `120000` | PR 轮询间隔 |
-| `repositories` | — | `owner/repo` 形式的仓库白名单；至少一个（必填） |
-| `review.maxToolCalls` | `30` | 单次评审回合的工具调用预算；超限被守卫拒绝 |
-| `review.toolTimeoutMs` | `30000` | 单次工具调用超时 |
-| `review.toolResultLimit` | `60000` | 每次调用返回给模型的最大工具结果字符数 |
-| `review.timeoutMs` | `900000` | 单回合总截止时间；超时后取消 agent |
-| `review.defaultInstructions` | — | 仅当基础仓库缺少 `.github/review_instructions.md` 时使用的兜底指令 |
-| `review.commandAuthorAssociations` | `['OWNER','MEMBER','COLLABORATOR']` | 允许触发 `/review`、`/bot` 命令的评论作者身份（GitHub `author_association` 值，大小写不敏感）；`['*']` 允许所有人，空数组禁止所有人 |
-| `mcp.command` | — | 启动每回合 GitHub MCP server 的命令（必填） |
-| `mcp.args` | — | server 参数；请显式包含 `--tools=...`（强烈建议；守卫会过滤未列出的工具） |
-| `mcp.env` | `{}` | 额外的 MCP server 环境变量；GitHub 令牌自动注入 |
-| `mcp.cwd` | — | server 的可选工作目录 |
+| 部署与挂载：要求、profile patch 语法、MCP server、验证 | [docs/deploy.md](docs/deploy.md) | [docs/deploy.en.md](docs/deploy.en.md) |
+| 配置参考：字段表、环境变量注入、`!!js` 表达式 | [docs/config.md](docs/config.md) | [docs/config.en.md](docs/config.en.md) |
+| 工作原理：轮询/游标、评审流程、工具守卫、信任模型 | [docs/architecture.md](docs/architecture.md) | [docs/architecture.en.md](docs/architecture.en.md) |
+| 开发与已知限制 | [docs/development.md](docs/development.md) | [docs/development.en.md](docs/development.en.md) |
 
+带注释的最小组合示例见 [cordis.yml.example](./cordis.yml.example)。
 
-配置错误会在加载时响亮失败：缺少凭证、无效的仓库名、无法读取的私钥、缺少 MCP command/args 都会在激活时报错，而不是静默跳过评审。
+## License
 
-## 工作原理
-
-### 轮询与游标状态
-
-每个账户运行自己的轮询循环（先立即跑一次，之后每 `pollIntervalMs` 一次）。各轮询不会重叠。对每个 PR，轮询器决定：
-
-- 新 PR 或 `head.sha` 变化 → 执行评审。
-- 已评审或 `missing_instructions` 且 SHA 未变化 → 轮询评论中的 `/review` 与 `/bot` 命令。
-
-游标状态存放在 harness 的存储域中（`dsh_github_reviewer` 域、`accounts` 表、每账户一条记录），由部署路由到的后端持久化——挂 `dsh-storage-json` 时是 JSON 文件，挂 `dsh-storage-sqlite` 时就是真正的 SQLite 数据库。
-
-### 每 PR 的 Agent 与会话
-
-首次接触某个 PR 时，runner 向 agent 注册表请求一个 Agent，其会话 id 由账户与 PR 派生（`github:<account>:<owner>:<repo>:pr:<number>`）：
-
-- 若该 PR 会话已存在于 `sessionPersistence`，则以相同的 setup 世界 **恢复（resume）**（world = agent 创建时在其作用域上下文上注册的系统提示段与作用域工具的集合）。
-- 否则创建全新的 agent 与会话；会话 id 稳定，因此后续重启会恢复同一个 PR 对话。
-
-agent setup 在未发布的 agent 上下文上注册「评审世界」：一个 `complete` 系统提示段（按回合在评审/聊天提示之间切换）、四个被守卫的 GitHub 工具（作用域工具定义），以及一条把**所有全局工具**从该 agent 隐藏的工具限制——模型只能看到封闭的评审工具集，与 LingoBridge 的「仅守卫工具」handler 一致。会话日志就是持久的每 PR 历史——后续回合经主循环重放它，检查点/压缩与交互式会话完全相同。
-
-### 评审流程
-
-1. 从基础仓库（base 分支，再 base SHA）或配置的默认值读取可信指令。
-2. 用全新的安装令牌与注入的 `GITHUB_HOST` 启动每回合 GitHub MCP server。
-3. 装配回合槽（turn slot = 每回合的可变上下文：当前 PR、流程、指令、活动 MCP host、守卫状态），用评审用户提示通过 `agent.followup` 唤醒 PR agent。
-4. 等待 `agent.whenIdle()`：主循环驱动模型步骤与工具调用；守卫工具在每次调用上执行评审规则。
-5. 将会话 flush 到持久化，仅当被守卫的 `submit_pending` 调用以 `event=COMMENT` 成功时才把该 PR 标记为 `reviewed`。
-
-### 工具守卫
-
-四个工具（`mcp_github_pull_request_read`、`mcp_github_get_file_contents`、`mcp_github_pull_request_review_write`、`mcp_github_add_comment_to_pending_review`）只注册在 PR agent 的作用域上、绑定该 PR，且该作用域隐藏所有全局工具——其他 agent 永远看不到它们，评审 agent 也永远看不到全局工具：
-
-- `pull_request_read`：只允许 `get`、`get_diff`、`get_files`、`get_status`、`get_check_runs`；必须指向当前 PR。
-- `get_file_contents`：只允许 base/head 仓库；`sha` 必须是当前 base 或 head SHA；`ref` 必须是 base/head 分支、`refs/heads/<branch>`、base 仓库上的 `refs/pull/<number>/head`，或这些 SHA 之一；`sha` 与 `ref` 不能同时给出，都不给时默认 head SHA。
-- `pull_request_review_write`：`create` 不得携带 `event`/`body`，`commitID` 会校验（或注入）为 head SHA，多余字段被丢弃；`submit_pending` 仅允许 `event=COMMENT`。
-- `add_comment_to_pending_review`：仅相对路径；`FILE` 或 `LINE` 评论，`line`/`side` 与成对的 `startLine`/`startSide` 校验。
-
-批准、请求变更、解决线程、更新 PR、合并、仓库写入都在到达 MCP server 之前被拒绝。工具调用预算（`maxToolCalls`）、单次超时、结果截断与回合截止时间由守卫和 runner 在主循环之上强制执行。
-
-### 信任模型
-
-评审系统提示注册为 agent 的完整系统提示，只携带来自 base 仓库文件或配置默认值的可信指令。PR 元数据、标题/正文、diff、变更文件与工具输出都是不可信上下文；标题/正文在放入提示词前会清洗，提示词明确要求模型不遵循不可信上下文中的指令。
-
-- 评审会话日志（含 diff 与文件内容）会经 `sessionPersistence` 落盘；仓库含机密时，注意这些日志的存储位置。
-- `complete` 系统提示段只替换提示段，不抑制 harness 的 runtime contexts；若部署挂载了 workspace-context 类插件，非可信文本仍会进入模型输入。
-
-### 个人访问令牌（PAT）模式
-
-设置 `personalAccessToken`（classic `ghp_` 或 fine-grained `github_pat_`）后无需 App 三件套，两者互斥。注意与 App 模式的语义差异：
-
-- 评审与评论以**你本人的身份**发出，没有 `[bot]` 标识。
-- 建议使用 fine-grained PAT 并按需收窄：Contents: Read、Pull requests: Read & Write、Issues: Read & Write、Checks: Read（Metadata 自动附带）。
-- PAT 发出的回复 `user.type` 是 `User` 而非 `Bot`，不会被机器人过滤器拦截：若回复内容以 `/bot` 开头会被再次当作命令（本插件的正常回复不会），与其他以用户身份运行的机器人共用仓库时需留意。
-- 你自己的评论 `author_association` 是 `OWNER`，默认就在命令白名单内。
-
-## 开发
-
-```sh
-npm install
-npm run typecheck
-npm test
-npm run coverage
-npm run build
-```
-
-## 已知限制与待办
-
-- 游标存在 harness 存储域中；当后端是单机 JSON 文件时，两台主机跑同一账户仍会重复轮询。PR 会话经 harness 持久化，但评审*触发*状态没有（LingoBridge 把两者都放在其账户 store 中）。
-- 插件要求完整的 agent-loop 部署（`agents` + `sessions`）；在没有它们的裸组合里不再激活。没有 `sessionPersistence` provider 时，PR 会话跨重启只是内存态。
-- PR 会话与交互式会话共用会话存储；在那里可见、可回放，但除了会话 id 之外没有标记它们是评审器会话。
-- GitHub API 限流会以错误形式呈现，下一轮询继续；除轮询间隔外没有退避。
-- 评论轮询以游标时间戳作为 `since` 边界，因此在下一次轮询前被删除的评论不会被看到。
+[Apache-2.0](LICENSE)

@@ -5,8 +5,16 @@
 # must mount the agent-loop family; swap in whatever spine/LLM/persistence
 # plugins your deployment already uses.
 #
+# 在真实 profile 中，这些行要放进 profile 的 cordis.patch.yml（或 --patch 覆盖层），
+# 且必须包在 `- insert:` 里——patch 顶层的普通行是「按 id 覆盖已有行」的语义，
+# 新插件 id 不存在时会报 `patch: entry "<id>" not found`。
+# In a real profile these rows go into the profile's cordis.patch.yml (or a
+# --patch overlay) WRAPPED IN `- insert:`; a plain top-level row is an
+# id-targeted override, and a new plugin id fails with
+# `patch: entry "<id>" not found`.
+#
 # Mount the plugin ONCE PER ACCOUNT (flat config, multi-instance pattern):
-# every entry below with `name: '@xinlongwu/dsh-github-reviewer'` runs one
+# every entry below with `name: 'dsh-github-reviewer'` runs one
 # independent poll loop.
 
 # LLM adapter — replace with whatever LLM plugin your deployment uses.
@@ -49,10 +57,14 @@
     model: deepseek-chat
 
 - id: github-reviewer-org
-  name: '@xinlongwu/dsh-github-reviewer'
+  name: 'dsh-github-reviewer'
   config:
     # Account label used in logs and the cursor record key in the storage domain.
     name: org
+    # uiSettings defaults to true. Only this primary instance may own the fixed
+    # `github-reviewer` Web settings card; extra accounts below set it false.
+    # The card manages repositories, workspace fields, and review limits; auth,
+    # URLs, and MCP process settings remain composition-managed.
     # Required GitHub App identity. The App needs:
     #   - Pull requests: read/write (reviews and comments)
     #   - Contents: read (on the base repository, for
@@ -68,8 +80,16 @@
     baseUrl: 'https://api.github.com'
     webUrl: 'https://github.com'
     pollIntervalMs: 120000
+    # Optional. An empty list keeps the reviewer and settings UI active while
+    # polling no repositories.
     repositories:
       - 'owner/repo'
+    # Review sessions are filed under an auto-registered harness workspace
+    # (needs @deepseek-ai/dsh-workspace and its `workspaceRegistry` service; the
+    # web profile bundles it). Default directory:
+    # $DSH_HOME/github-reviewer/<name>, title: GithubReviewer.
+    # workspaceDir: '/var/lib/dsh/ghr'
+    # workspaceTitle: 'GithubReviewer'
     review:
       maxToolCalls: 30
       toolTimeoutMs: 30000
@@ -82,6 +102,15 @@
       defaultInstructions: |
         Review this pull request for correctness, regressions, security issues,
         and missing tests. Leave concise inline comments where useful.
+      # Optional review-model candidates, in preference order, resolved at the
+      # first session creation (not at mount). The first candidate whose
+      # provider is registered and whose model exists in that provider's
+      # catalog wins; if none is available that review is aborted and the
+      # failure is recorded in the cursor (backoff retry). Omit to use the
+      # deployment's default model selection (agentDefaultModel).
+      # models:
+      #   - { provider: deepseek-official, model: deepseek-v4-flash }
+      #   - { provider: ssct-openai, model: gpt-5.2 }
       # Optional. GitHub author_association values allowed to trigger /review
       # and /bot comments. ['*'] allows everyone; [] allows no one.
       commandAuthorAssociations: ['OWNER', 'MEMBER', 'COLLABORATOR']
@@ -98,9 +127,10 @@
 
 # A second account is just another plugin instance with its own config.
 - id: github-reviewer-personal
-  name: '@xinlongwu/dsh-github-reviewer'
+  name: 'dsh-github-reviewer'
   config:
     name: personal
+    uiSettings: false
     appId: '654321'
     installationId: '123456'
     privateKeyPath: '/etc/dsh/github-app-2.pem'

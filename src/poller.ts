@@ -19,6 +19,7 @@ import {
   markCommentCheck,
   markCursor,
   markReviewFailure,
+  markReviewing,
   recordProcessedComment,
   reviewBackoffActive,
   shouldProcessCursor,
@@ -76,8 +77,11 @@ export interface AccountPollerDeps {
 export class AccountPoller {
   private readonly abortController = new AbortController()
   private running = false
+  private started = false
+  private disposed = false
+  private disposal: Promise<void> | undefined
   private timer: ReturnType<typeof setInterval> | undefined
-  /** The currently executing tick, so dispose can wait for it. */
+  /** The actual executing tick; skipped interval callbacks never replace it. */
   private currentTick: Promise<void> | undefined
   /** Draft PRs already logged as skipped, so the line is emitted once per unchanged PR. Bounded. */
   private readonly skippedDrafts = new Map<string, true>
@@ -97,38 +101,36 @@ export class AccountPoller {
    * `pollIntervalMs`. Ticks skip while the previous poll still runs.
    */
   start(): void {
-    this.currentTick = this.safeTick()
-    this.timer = setInterval(() => {
-      this.currentTick = this.safeTick()
-    }, this.deps.account.pollIntervalMs)
+    if (this.started || this.disposed) return
+    this.started = true
+    this.launchTick()
+    this.timer = setInterval(() => { this.launchTick() }, this.deps.account.pollIntervalMs)
     this.timer.unref()
   }
 
-  /**
-   * Abort in-flight work, stop the timer, wait briefly for the running tick
-   * to unwind, and dispose the PR agents. Waiting keeps cursor writes from
-   * racing the storage-domain close that follows in the plugin disposer.
-   */
-  async dispose(): Promise<void> {
+  /** Stop scheduling, cancel agent work, and wait for the active tick to settle. */
+  dispose(): Promise<void> {
+    if (this.disposal !== undefined) return this.disposal
+    this.disposed = true
     if (this.timer !== undefined) clearInterval(this.timer)
     this.timer = undefined
     this.abortController.abort()
     const tick = this.currentTick
-    if (tick !== undefined) {
-      let grace: ReturnType<typeof setTimeout> | undefined
-      try {
-        await Promise.race([
-          tick,
-          new Promise<void>(resolve => {
-            grace = setTimeout(resolve, 5000)
-            grace.unref()
-          }),
-        ])
-      } finally {
-        if (grace !== undefined) clearTimeout(grace)
-      }
-    }
-    await this.deps.driver.dispose()
+    this.disposal = Promise.all([
+      this.deps.driver.dispose(),
+      tick ?? Promise.resolve(),
+    ]).then(() => {})
+    return this.disposal
+  }
+
+  /** Start one tick unless another is active or disposal has begun. */
+  private launchTick(): void {
+    if (this.disposed || this.currentTick !== undefined) return
+    const tick = this.safeTick()
+    this.currentTick = tick
+    void tick.finally(() => {
+      if (this.currentTick === tick) this.currentTick = undefined
+    })
   }
 
   /** One tick that never rejects into the timer. */
@@ -267,6 +269,12 @@ export class AccountPoller {
       return
     }
     const instructions = resolved.instructions
+    // Persist the in-review marker before driving the turn: a live process
+    // never observes it mid-review (ticks are serialized), so finding
+    // `reviewing` after a restart means the last review was interrupted and
+    // must be continued (the PR's persisted session resumes the remaining work).
+    markReviewing(state, pr, new Date())
+    await this.deps.store.save(state)
     let outcome: { submitted: boolean; text: string }
     try {
       this.logger.info(

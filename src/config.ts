@@ -8,7 +8,12 @@
  */
 
 import z from '@deepseek-ai/schemastery'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { parseRepository } from './github/model.ts'
+import type { ReviewerSettings } from './settings-contract.ts'
+
+export type { ReviewerSettings } from './settings-contract.ts'
 
 /** Defaults shared with LingoBridge. */
 export const DEFAULT_BASE_URL = 'https://api.github.com'
@@ -21,11 +26,19 @@ export const DEFAULT_TOOL_RESULT_LIMIT = 60_000
 export const DEFAULT_REVIEW_TIMEOUT_MS = 15 * 60_000
 /** Default account label when the instance config omits `name`. */
 export const DEFAULT_ACCOUNT_NAME = 'default'
+/** Default harness workspace title that review-agent sessions are filed under. */
+export const DEFAULT_WORKSPACE_TITLE = 'GithubReviewer'
 /**
  * Default `author_association` values allowed to trigger `/review` and `/bot`:
  * maintainers only, so strangers on public repos cannot drive LLM spend.
  */
 export const DEFAULT_COMMAND_AUTHOR_ASSOCIATIONS = ['OWNER', 'MEMBER', 'COLLABORATOR']
+
+/** One candidate model for review agents: provider route + exact model id. */
+export interface ReviewModel {
+  provider: string
+  model: string
+}
 
 /** Per-account review limits, fully resolved after normalization. */
 export interface ReviewConfig {
@@ -40,6 +53,15 @@ export interface ReviewConfig {
    * commands. Defaults to maintainers; `['*']` allows anyone.
    */
   commandAuthorAssociations: string[]
+  /**
+   * Ordered review-model candidates, `{provider, model}` pairs. When non-empty,
+   * the plugin picks the first candidate whose provider is mounted and whose
+   * model appears in that provider's catalog, and uses it for every review
+   * agent instead of the deployment's default model selection. A load error is
+   * thrown when none of the candidates is available. Empty means "use the
+   * deployment default" (`agentDefaultModel`).
+   */
+  models: ReviewModel[]
 }
 
 /** Per-review GitHub MCP server spawn parameters, fully resolved after normalization. */
@@ -54,6 +76,8 @@ export interface McpConfig {
 export interface Config {
   /** Account label used in logs and as the cursor record key; defaults to `default`. */
   name?: string
+  /** Register the optional Web settings namespace; defaults to true. Extra instances must disable it. */
+  uiSettings?: boolean
   appId: string
   installationId: string
   privateKeyPath: string
@@ -67,6 +91,16 @@ export interface Config {
   webUrl: string
   pollIntervalMs: number
   repositories: string[]
+  /**
+   * Directory that hosts this account's review-agent sessions. Registered as a
+   * harness workspace (titled {@link DEFAULT_WORKSPACE_TITLE}) when the
+   * deployment mounts `@deepseek-ai/dsh-workspace` and its `workspaceRegistry`
+   * service, so PR sessions group there instead of the ungrouped bucket. Defaults to
+   * `$DSH_HOME/github-reviewer/<name>`.
+   */
+  workspaceDir?: string
+  /** Display title of the harness workspace created for this account. */
+  workspaceTitle?: string
   /** Optional; defaults are materialized by {@link normalizeAccountConfig}. */
   review?: ReviewConfig
   /** Optional; the command and args are required for review operation. */
@@ -76,6 +110,7 @@ export interface Config {
 /** One review account with every default resolved. */
 export interface ResolvedAccountConfig {
   name: string
+  uiSettings: boolean
   appId: string
   installationId: string
   privateKeyPath: string
@@ -84,9 +119,16 @@ export interface ResolvedAccountConfig {
   webUrl: string
   pollIntervalMs: number
   repositories: string[]
+  workspaceDir: string
+  workspaceTitle: string
   review: ReviewConfig
   mcp: McpConfig
 }
+
+const ReviewModelEntry = z.object({
+  provider: z.string().default(''),
+  model: z.string().default(''),
+})
 
 const Review = z.object({
   maxToolCalls: z.number().min(1).default(DEFAULT_MAX_TOOL_CALLS),
@@ -95,7 +137,17 @@ const Review = z.object({
   timeoutMs: z.number().min(1).default(DEFAULT_REVIEW_TIMEOUT_MS),
   defaultInstructions: z.string().default(''),
   commandAuthorAssociations: z.array(z.string()).default([...DEFAULT_COMMAND_AUTHOR_ASSOCIATIONS]),
+  models: z.array(ReviewModelEntry).default([]),
 })
+
+/** Settings schema intentionally excluding account identity, authentication, URLs, and MCP process configuration. */
+export const ReviewerSettingsSchema = z.object({
+  pollIntervalMs: z.number().min(1000).default(DEFAULT_POLL_INTERVAL_MS),
+  repositories: z.array(z.string()).default([]),
+  workspaceDir: z.string().default(''),
+  workspaceTitle: z.string().default(DEFAULT_WORKSPACE_TITLE),
+  review: Review,
+}) as unknown as z<ReviewerSettings>
 
 const Mcp = z.object({
   command: z.string().default(''),
@@ -107,14 +159,17 @@ const Mcp = z.object({
 /** Schemastery schema for one plugin instance (one account). */
 export const Config = z.object({
   name: z.string().default(DEFAULT_ACCOUNT_NAME),
+  uiSettings: z.boolean().default(true),
   appId: z.string().default(''),
   installationId: z.string().default(''),
   privateKeyPath: z.string().default(''),
-  personalAccessToken: z.string().default(''),
+  personalAccessToken: z.string().role('secret').default(''),
   baseUrl: z.string().default(DEFAULT_BASE_URL),
   webUrl: z.string().default(DEFAULT_WEB_URL),
   pollIntervalMs: z.number().min(1000).default(DEFAULT_POLL_INTERVAL_MS),
   repositories: z.array(z.string()).default([]),
+  workspaceDir: z.string().default(''),
+  workspaceTitle: z.string().default(DEFAULT_WORKSPACE_TITLE),
   review: Review,
   mcp: Mcp,
 }) as unknown as z<Config>
@@ -148,6 +203,7 @@ export function normalizeAccountConfig(account: Config): ResolvedAccountConfig {
   const args = (account.mcp?.args ?? []).map(value => value.trim()).filter(value => value !== '')
   return {
     name,
+    uiSettings: account.uiSettings ?? true,
     appId: account.appId.trim(),
     installationId: account.installationId.trim(),
     privateKeyPath: account.privateKeyPath.trim(),
@@ -156,6 +212,8 @@ export function normalizeAccountConfig(account: Config): ResolvedAccountConfig {
     webUrl: account.webUrl.trim().replace(/\/+$/, ''),
     pollIntervalMs: account.pollIntervalMs,
     repositories,
+    workspaceDir: resolveWorkspaceDir(account.workspaceDir?.trim() ?? '', name),
+    workspaceTitle: (account.workspaceTitle ?? DEFAULT_WORKSPACE_TITLE).trim() || DEFAULT_WORKSPACE_TITLE,
     review: {
       maxToolCalls: account.review?.maxToolCalls ?? DEFAULT_MAX_TOOL_CALLS,
       toolTimeoutMs: account.review?.toolTimeoutMs ?? DEFAULT_TOOL_TIMEOUT_MS,
@@ -165,6 +223,9 @@ export function normalizeAccountConfig(account: Config): ResolvedAccountConfig {
       commandAuthorAssociations: (account.review?.commandAuthorAssociations ?? DEFAULT_COMMAND_AUTHOR_ASSOCIATIONS)
         .map(value => value.trim().toUpperCase())
         .filter(value => value !== ''),
+      models: (account.review?.models ?? [])
+        .map(model => ({ provider: model.provider.trim(), model: model.model.trim() }))
+        .filter(model => model.provider !== '' && model.model !== ''),
     },
     mcp: {
       command: (account.mcp?.command ?? '').trim(),
@@ -173,6 +234,57 @@ export function normalizeAccountConfig(account: Config): ResolvedAccountConfig {
       cwd: (account.mcp?.cwd ?? '').trim(),
     },
   }
+}
+
+/** Extract the non-secret settings base from a normalized account configuration. */
+export function reviewerSettingsOf(account: ResolvedAccountConfig): ReviewerSettings {
+  return {
+    pollIntervalMs: account.pollIntervalMs,
+    repositories: [...account.repositories],
+    workspaceDir: account.workspaceDir,
+    workspaceTitle: account.workspaceTitle,
+    review: {
+      ...account.review,
+      commandAuthorAssociations: [...account.review.commandAuthorAssociations],
+      models: account.review.models.map(model => ({ ...model })),
+    },
+  }
+}
+
+/** Resolve one settings value over composition-owned identity, authentication, URLs, and MCP fields. */
+export function accountWithReviewerSettings(
+  base: ResolvedAccountConfig,
+  settings: ReviewerSettings,
+): ResolvedAccountConfig {
+  return normalizeAccountConfig({
+    ...base,
+    pollIntervalMs: settings.pollIntervalMs,
+    repositories: settings.repositories,
+    workspaceDir: settings.workspaceDir,
+    workspaceTitle: settings.workspaceTitle,
+    review: settings.review,
+  })
+}
+
+/**
+ * Resolve and validate a settings candidate before it is persisted or used to
+ * replace a running reviewer runtime.
+ */
+export function validateReviewerSettings(base: ResolvedAccountConfig, settings: ReviewerSettings): void {
+  const account = accountWithReviewerSettings(base, settings)
+  validateAccountRuntime(account.name, account)
+}
+
+/**
+ * Resolve the directory hosting this account's review-agent sessions: the
+ * configured value when present, otherwise `$DSH_HOME/github-reviewer/<name>`.
+ * @param configured - the configured `workspaceDir`, already trimmed.
+ * @param name - resolved account name.
+ */
+function resolveWorkspaceDir(configured: string, name: string): string {
+  if (configured !== '') return configured
+  const home = process.env.DSH_HOME ?? join(homedir(), '.dsh')
+  return join(home, 'github-reviewer', name)
 }
 
 /**
@@ -196,9 +308,6 @@ export function validateAccountRuntime(name: string, account: ResolvedAccountCon
     if (account.appId === '') throw new Error(`github-reviewer.${name}.appId is required`)
     if (account.installationId === '') throw new Error(`github-reviewer.${name}.installationId is required`)
     if (account.privateKeyPath === '') throw new Error(`github-reviewer.${name}.privateKeyPath is required`)
-  }
-  if (account.repositories.length === 0) {
-    throw new Error(`github-reviewer.${name}.repositories must include at least one owner/repo`)
   }
   for (const repo of account.repositories) {
     if (parseRepository(repo) === undefined) {

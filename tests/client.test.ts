@@ -15,11 +15,78 @@ function prPayload(overrides: Record<string, unknown> = {}): Record<string, unkn
     body: 'body',
     html_url: 'https://github.com/owner/repo/pull/42',
     draft: false,
+    changed_files: 3,
+    additions: 10,
+    deletions: 2,
     head: { sha: 'head-sha', ref: 'feature', repo: { owner: 'forker', name: 'repo', full_name: 'forker/repo' } },
     base: { sha: 'base-sha', ref: 'main', repo: { owner: 'owner', name: 'repo', full_name: 'owner/repo' } },
     ...overrides,
   }
 }
+
+describe('GitHubClient.listAccessibleRepositories', () => {
+  const payload = (owner: string, repository: string, isPrivate = false) => ({
+    owner: { login: owner },
+    name: repository,
+    full_name: `${owner}/${repository}`,
+    private: isPrivate,
+  })
+
+  it('lists PAT repositories with affiliation pagination, validation, deduplication, and sorting', async () => {
+    const fetchImpl = vi.fn(async (url: string | URL | Request) => {
+      const value = new URL(String(url))
+      expect(value.pathname).toBe('/user/repos')
+      expect(value.searchParams.get('affiliation')).toBe('owner,collaborator,organization_member')
+      const page = value.searchParams.get('page')
+      const repositories = page === '1'
+        ? [payload('Zoo', 'beta', true), ...Array.from({ length: 99 }, (_, index) => payload('fill', `repo-${index}`))]
+        : [payload('alpha', 'One'), payload('zoo', 'BETA'), { owner: { login: '' }, name: 'invalid', full_name: '/invalid' }]
+      return new Response(JSON.stringify(repositories), { status: 200 })
+    })
+
+    const repositories = await client(fetchImpl as typeof fetch).listAccessibleRepositories('user')
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+    expect(repositories).toHaveLength(101)
+    expect(repositories[0]).toEqual({ owner: 'alpha', repository: 'One', fullName: 'alpha/One', private: false })
+    expect(repositories.at(-1)).toEqual({ owner: 'zoo', repository: 'BETA', fullName: 'zoo/BETA', private: false })
+  })
+
+  it('lists GitHub App installation repositories from the response envelope', async () => {
+    const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const value = new URL(String(url))
+      expect(value.pathname).toBe('/installation/repositories')
+      expect(value.searchParams.get('affiliation')).toBeNull()
+      expect(init).toBeDefined()
+      expect((init?.headers as Record<string, string> | undefined)?.Authorization).toBe('Bearer tok')
+      return new Response(JSON.stringify({ repositories: [payload('owner', 'private-repo', true)] }), { status: 200 })
+    })
+
+    await expect(client(fetchImpl as typeof fetch).listAccessibleRepositories('installation')).resolves.toEqual([
+      { owner: 'owner', repository: 'private-repo', fullName: 'owner/private-repo', private: true },
+    ])
+  })
+
+  it('accepts an exact full-page safety cap when the lookahead page is empty', async () => {
+    const fetchImpl = vi.fn(async (url: string | URL | Request) => {
+      const page = Number(new URL(String(url)).searchParams.get('page'))
+      const repositories = page <= 50
+        ? Array.from({ length: 100 }, (_, index) => payload('owner', `repo-${page}-${index}`))
+        : []
+      return new Response(JSON.stringify(repositories), { status: 200 })
+    })
+
+    await expect(client(fetchImpl as typeof fetch).listAccessibleRepositories('user'))
+      .resolves.toHaveLength(5_000)
+    expect(fetchImpl).toHaveBeenCalledTimes(51)
+  })
+
+  it('rejects an invalid listing envelope', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ repositories: null }), { status: 200 }))
+    await expect(client(fetchImpl as typeof fetch).listAccessibleRepositories('installation'))
+      .rejects.toThrow('invalid repository listing response')
+  })
+})
 
 describe('GitHubClient.listOpenPullRequests', () => {
   it('paginates and parses PRs', async () => {
@@ -33,6 +100,9 @@ describe('GitHubClient.listOpenPullRequests', () => {
     expect(prs[0]).toMatchObject({
       number: 1,
       title: 'Fix bug',
+      changedFiles: 3,
+      additions: 10,
+      deletions: 2,
       head: { sha: 'head-sha', ref: 'feature', repo: { owner: 'forker', name: 'repo' } },
       base: { sha: 'base-sha', ref: 'main', repo: { owner: 'owner', name: 'repo' } },
     })

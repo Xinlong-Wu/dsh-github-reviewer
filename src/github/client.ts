@@ -8,6 +8,7 @@ import type { TokenSource } from './auth.ts'
 import type { IssueComment, PullRequest, Repository, ReviewComment, ReviewInstructions } from './model.ts'
 import { fullName, repository, shortSHA, truncateForError } from './model.ts'
 import { REVIEW_INSTRUCTIONS_PATH } from './prompts.ts'
+import type { AccessibleRepository } from '../repository-catalog-contract.ts'
 
 /** Returned when the GitHub API answers 404. */
 export class NotFoundError extends Error {
@@ -87,6 +88,9 @@ interface RawPullRequest {
   draft?: unknown
   head?: RawPullRequestRef | null
   base?: RawPullRequestRef | null
+  changed_files?: unknown
+  additions?: unknown
+  deletions?: unknown
 }
 
 /** Raw issue comment JSON. */
@@ -103,6 +107,19 @@ interface RawIssueComment {
 interface RawReviewComment extends RawIssueComment {
   path?: unknown
   in_reply_to_id?: unknown
+}
+
+/** Raw repository fields returned by user and installation listings. */
+interface RawAccessibleRepository {
+  name?: unknown
+  full_name?: unknown
+  private?: unknown
+  owner?: { login?: unknown } | null
+}
+
+/** GitHub App installation repository listing envelope. */
+interface RawInstallationRepositories {
+  repositories?: unknown
 }
 
 function asString(value: unknown): string {
@@ -140,7 +157,29 @@ function parseRawPullRequest(raw: RawPullRequest): PullRequest {
     draft: raw.draft === true,
     head: parseRawRef(raw.head),
     base: parseRawRef(raw.base),
+    changedFiles: asNumber(raw.changed_files),
+    additions: asNumber(raw.additions),
+    deletions: asNumber(raw.deletions),
   }
+}
+
+function parseAccessibleRepository(raw: unknown): AccessibleRepository | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined
+  const value = raw as RawAccessibleRepository
+  const owner = asString(value.owner?.login).trim()
+  const name = asString(value.name).trim()
+  const fullName = asString(value.full_name).trim()
+  if (owner === '' || name === '' || fullName.toLowerCase() !== `${owner}/${name}`.toLowerCase()) return undefined
+  return { owner, repository: name, fullName: `${owner}/${name}`, private: value.private === true }
+}
+
+function sortedAccessibleRepositories(values: readonly AccessibleRepository[]): AccessibleRepository[] {
+  const repositories = new Map<string, AccessibleRepository>()
+  for (const value of values) repositories.set(value.fullName.toLowerCase(), value)
+  return [...repositories.values()].sort((left, right) => (
+    left.owner.localeCompare(right.owner, 'en', { sensitivity: 'base' })
+    || left.repository.localeCompare(right.repository, 'en', { sensitivity: 'base' })
+  ))
 }
 
 /** Escape one URL path segment. */
@@ -209,6 +248,43 @@ export class GitHubClient {
       return JSON.parse(text) as T
     } catch (error) {
       throw new GitHubApiError(method, apiPath, response.status, `invalid JSON response: ${String(error)}`)
+    }
+  }
+
+  /**
+   * List repositories visible to the configured PAT or GitHub App installation token.
+   * @param authentication - endpoint family matching the TokenSource credential.
+   * @param signal - optional cancellation.
+   * @returns validated, deduplicated repositories in stable owner/name order.
+   */
+  async listAccessibleRepositories(
+    authentication: 'user' | 'installation',
+    signal?: AbortSignal,
+  ): Promise<AccessibleRepository[]> {
+    const out: AccessibleRepository[] = []
+    const apiPath = authentication === 'user' ? '/user/repos' : '/installation/repositories'
+    for (let page = 1; ; page++) {
+      const query: Record<string, string> = authentication === 'user'
+        ? {
+            affiliation: 'owner,collaborator,organization_member',
+            sort: 'full_name',
+            direction: 'asc',
+            per_page: '100',
+            page: String(page),
+          }
+        : { per_page: '100', page: String(page) }
+      const raw = await this.doJSON<unknown>('GET', apiPath, query, undefined, signal)
+      const items = authentication === 'user'
+        ? raw
+        : typeof raw === 'object' && raw !== null
+          ? (raw as RawInstallationRepositories).repositories
+          : undefined
+      if (!Array.isArray(items)) throw new GitHubApiError('GET', apiPath, 200, 'invalid repository listing response')
+      for (const item of items) {
+        const parsed = parseAccessibleRepository(item)
+        if (parsed !== undefined) out.push(parsed)
+      }
+      if (items.length < 100) return sortedAccessibleRepositories(out)
     }
   }
 

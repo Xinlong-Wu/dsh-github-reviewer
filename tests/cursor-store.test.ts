@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import type { KvTable } from '@deepseek-ai/dsh-storage-domain'
-import { cursorDomainSpec, StorageDomainCursorStore } from '../src/cursor-store.ts'
+import { cursorDomainSpec, cursorRowSchema, StorageDomainCursorStore } from '../src/cursor-store.ts'
 import type { CursorStore } from '../src/cursor-store.ts'
 import {
   CURSOR_STATUS_MISSING_INSTRUCTIONS,
   CURSOR_STATUS_REVIEWED,
+  CURSOR_STATUS_REVIEWING,
   emptyCursorState,
   markCursor,
 } from '../src/github/cursor.ts'
@@ -17,6 +18,9 @@ const pr: PullRequest = {
   body: '',
   htmlUrl: 'u',
   draft: false,
+  changedFiles: 3,
+  additions: 10,
+  deletions: 2,
   head: { sha: 'head-sha', ref: 'feature', repo: { owner: 'forker', name: 'repo' } },
   base: { sha: 'base-sha', ref: 'main', repo: { owner: 'owner', name: 'repo' } },
 }
@@ -47,6 +51,24 @@ describe('cursorDomainSpec', () => {
     expect(cursorDomainSpec.name).toBe('dsh_github_reviewer')
     expect(cursorDomainSpec.version).toBe(0)
     expect(Object.keys(cursorDomainSpec.tables)).toEqual(['accounts'])
+  })
+
+  it('persisted schema accepts every cursor status, including reviewing', () => {
+    // Regression: the reviewing status was added to the runtime but not to the
+    // storage-domain schema, so an interrupted review persisted `reviewing` and
+    // the next boot failed to parse the record.
+    const ok = cursorRowSchema.safeParse({
+      prs: { 'owner/repo#1': { headSHA: 'aaa', status: CURSOR_STATUS_REVIEWING } },
+    })
+    expect(ok.success).toBe(true)
+    const okReviewed = cursorRowSchema.safeParse({
+      prs: { 'owner/repo#1': { headSHA: 'aaa', status: CURSOR_STATUS_REVIEWED } },
+    })
+    expect(okReviewed.success).toBe(true)
+    const bad = cursorRowSchema.safeParse({
+      prs: { 'owner/repo#1': { headSHA: 'aaa', status: 'bogus' } },
+    })
+    expect(bad.success).toBe(false)
   })
 })
 

@@ -1,0 +1,8 @@
+# dsh-github-reviewer bundle layer.
+# Installation registers one enabled default instance. Override this row in the
+# profile's cordis.patch.yml with credentials, repositories, and MCP configuration
+# before the next restart; insert additional rows for additional accounts.
+
+- insert:
+    - id: github-reviewer
+      name: dsh-github-reviewer

@@ -14,6 +14,13 @@ import { sanitizeReviewPromptText } from './sanitizer.ts'
 export const REVIEW_INSTRUCTIONS_PATH = '.github/review_instructions.md'
 
 /**
+ * Cap for the PR body placed in the review user prompt. The full body stays
+ * reachable through `mcp_github_pull_request_read method=get`, so a giant
+ * body never bloats the prompt or widens the injection surface.
+ */
+export const MAX_PROMPT_BODY_CHARS = 8_000
+
+/**
  * Build the review system prompt for one PR.
  * @param pr - the pull request being reviewed.
  * @param instructions - trusted instructions and their provenance.
@@ -79,13 +86,20 @@ export function buildReviewUserPrompt(pr: PullRequest): string {
     `url: ${pr.htmlUrl}`,
     `base: ${pr.base.ref} @ ${pr.base.sha}`,
     `head: ${pr.head.ref} @ ${pr.head.sha}`,
+    `size: ${pr.changedFiles} files (+${pr.additions}/-${pr.deletions})`,
     '</pull_request>',
   ]
   const body = sanitizeReviewPromptText(pr.body)
   if (body !== '') {
-    lines.push('', '<pull_request_body>', body, '</pull_request_body>')
+    lines.push('', '<pull_request_body>', truncateReviewBody(body), '</pull_request_body>')
   }
   return `${lines.join('\n')}\n`
+}
+
+/** Truncate the sanitized PR body for the user prompt, marking the cut. */
+function truncateReviewBody(body: string): string {
+  if (body.length <= MAX_PROMPT_BODY_CHARS) return body
+  return `${body.slice(0, MAX_PROMPT_BODY_CHARS)}...[body truncated; use pull_request_read method=get for the full body]`
 }
 
 /**
