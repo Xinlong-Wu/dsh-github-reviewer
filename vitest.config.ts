@@ -1,6 +1,21 @@
+import { transform } from 'esbuild'
 import { defineConfig } from 'vitest/config'
 
 export default defineConfig({
+  plugins: [{
+    name: 'github-reviewer-standard-decorators',
+    enforce: 'pre',
+    async transform(code, id) {
+      if (!id.endsWith('/src/index.ts') || !code.includes('@Remote')) return
+      const result = await transform(code, {
+        loader: 'ts',
+        target: 'es2022',
+        sourcefile: id,
+        sourcemap: 'external',
+      })
+      return { code: result.code, map: result.map }
+    },
+  }],
   test: {
     coverage: {
       include: ['src/**'],

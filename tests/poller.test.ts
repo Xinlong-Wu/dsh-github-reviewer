@@ -171,6 +171,23 @@ describe('AccountPoller review flow', () => {
     await poller.dispose()
   })
 
+  it('skips invalid repositories and stops before listing when already aborted', async () => {
+    const c = fakeClient()
+    const { driver } = fakeDriver()
+    const lines: string[] = []
+    const poller = buildPoller(c, driver, lines, 'missing', '', ['not-a-repo', 'owner/repo'])
+
+    await poller.pollOnce(signal)
+    expect(lines.some(line => line.includes('skipping invalid github repo'))).toBe(true)
+    expect(c.listOpenPullRequests).toHaveBeenCalledTimes(1)
+
+    const controller = new AbortController()
+    controller.abort()
+    await poller.pollOnce(controller.signal)
+    expect(c.listOpenPullRequests).toHaveBeenCalledTimes(1)
+    await poller.dispose()
+  })
+
   it('reviews a new PR and marks the cursor reviewed', async () => {
     const c = fakeClient()
     c.prs = [pr]
@@ -210,10 +227,11 @@ describe('AccountPoller review flow', () => {
     const poller = buildPoller(c, driver, lines, { text: 'trusted', source: 'x' })
 
     await poller.pollOnce(signal)
+    await poller.pollOnce(signal)
     await poller.dispose()
 
     expect(reviewCalls).toHaveLength(0)
-    expect(lines.some(line => line.includes('skipping draft github pr'))).toBe(true)
+    expect(lines.filter(line => line.includes('skipping draft github pr'))).toHaveLength(1)
   })
 
   it('marks missing instructions and retries only after the head SHA changes', async () => {
@@ -360,6 +378,21 @@ describe('AccountPoller comment commands', () => {
     expect(chatCalls[0].message).toBe('explain this')
     expect(c.issueCommentCalls).toEqual(['The reply.'])
     expect(lines.some(line => line.includes('github bot chat triggered by comment'))).toBe(true)
+  })
+
+  it('does not post an empty bot reply', async () => {
+    const c = fakeClient()
+    c.prs = [pr]
+    const { driver } = fakeDriver()
+    driver.driveChat = vi.fn(async () => '')
+    const poller = reviewedPoller(c, driver, [])
+    await poller.pollOnce(signal)
+
+    c.issueComments = [issueComment(10, '/bot stay silent')]
+    await poller.pollOnce(signal)
+    await poller.dispose()
+
+    expect(c.issueCommentCalls).toHaveLength(0)
   })
 
   it('triggers a re-review on /review and still answers later comments', async () => {
@@ -610,6 +643,21 @@ describe('AccountPoller failure paths', () => {
     expect(lines.some(line => line.includes('github rate limited') && line.includes('retry_after_s=60'))).toBe(true)
   })
 
+  it('logs rate limiting without a retry hint when GitHub omits it', async () => {
+    const c = fakeClient()
+    c.listOpenPullRequests = async () => {
+      throw new GitHubRateLimitError('GET', '/repos/owner/repo/pulls', 403, 'limited')
+    }
+    const { driver } = fakeDriver()
+    const lines: string[] = []
+    const poller = buildPoller(c, driver, lines, { text: 'trusted', source: 'x' })
+
+    await poller.pollOnce(signal)
+    await poller.dispose()
+
+    expect(lines.some(line => line.includes('github rate limited') && !line.includes('retry_after_s='))).toBe(true)
+  })
+
   it('dispose waits for an in-flight tick to finish', async () => {
     const c = fakeClient()
     c.prs = [pr]
@@ -635,7 +683,9 @@ describe('AccountPoller failure paths', () => {
     poller.start()
     // Wait until the single immediate tick is actually blocked inside driveReview.
     await reviewEntered
-    const disposed = poller.dispose().then(() => { disposeResolvedWhileInFlight = true })
+    const disposal = poller.dispose()
+    expect(poller.dispose()).toBe(disposal)
+    const disposed = disposal.then(() => { disposeResolvedWhileInFlight = true })
     expect(driverDisposeStarted).toBe(true)
     await new Promise(resolve => setTimeout(resolve, 20))
     expect(disposeResolvedWhileInFlight).toBe(false)
