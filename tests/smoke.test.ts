@@ -167,6 +167,17 @@ describe('plugin wiring through a real Cordis context', () => {
     await fiber.dispose()
   })
 
+  it('rejects account names that normalize to the same Session identity', async () => {
+    const keyPath = await tempKeyPath()
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', { status: 200 })))
+    const ctx = new Context()
+    provideCoreServices(ctx)
+    const fiber = await ctx.plugin(plugin, validConfig(keyPath, { name: 'review/team' }))
+    await vi.waitFor(() => expect(fiber.state).toBe(2)) // FiberState.ACTIVE
+    await expect(ctx.plugin(plugin, validConfig(keyPath, { name: 'review_team' }))).rejects.toThrow('normalized account identity')
+    await fiber.dispose()
+  })
+
   it('activates with a personal access token and never exchanges an App JWT', async () => {
     const fetchMock = vi.fn(async () => new Response('[]', { status: 200 }))
     vi.stubGlobal('fetch', fetchMock)

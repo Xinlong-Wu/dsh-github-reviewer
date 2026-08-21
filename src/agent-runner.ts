@@ -26,6 +26,7 @@ import type { PullRequest, ReviewInstructions } from './github/model.ts'
 import { fullName } from './github/model.ts'
 import { buildChatSystemPrompt, buildReviewSystemPrompt, buildReviewUserPrompt } from './github/prompts.ts'
 import type { PollLogger } from './logger.ts'
+import { sessionKeyPrefix } from './session-key.ts'
 
 /** Runtime dependencies of one account's agent runner. */
 export interface AgentRunnerDeps {
@@ -73,8 +74,7 @@ export interface ReviewTurnOutcome {
 
 /** Stable session key for one PR: account-scoped, repo and PR number based. */
 export function sessionKey(accountName: string, pr: PullRequest): string {
-  const safeAccount = accountName.replace(/[^a-zA-Z0-9_.-]+/g, '_')
-  return `github:${safeAccount}:${pr.base.repo.owner}:${pr.base.repo.name}:pr:${pr.number}`
+  return `${sessionKeyPrefix(accountName)}${pr.base.repo.owner}:${pr.base.repo.name}:pr:${pr.number}`
 }
 
 /** Aggregate the last assistant text within one owned interval. */
