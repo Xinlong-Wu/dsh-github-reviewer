@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 vi.mock('@deepseek-ai/dsh-client-ui-primitives', async () => {
   const runtime = await import('react')
   const Icon = () => runtime.createElement('svg')
-  return { IconPlusOutline16: Icon, IconTrashOutline16: Icon }
+  return { IconChevronDownOutline14: Icon, IconPlusOutline16: Icon, IconTrashOutline16: Icon }
 })
 
 import { GithubReviewerCard } from '../src/client/GithubReviewerCard.tsx'
@@ -37,6 +37,12 @@ function state(overrides: Partial<GithubReviewerCardState> = {}): GithubReviewer
       overridden: false,
       invalid: false,
     },
+    repositoryCatalog: {
+      loading: false,
+      loaded: true,
+      error: null,
+      repositories: [{ owner: 'owner', repository: 'repo', fullName: 'owner/repo', private: false }],
+    },
     models: {
       rows: [{ provider: 'openai', model: 'gpt' }],
       overridden: false,
@@ -64,6 +70,8 @@ function props(snapshot: GithubReviewerCardState) {
     reset: vi.fn(),
     addRepository: vi.fn(),
     editRepository: vi.fn(),
+    ensureRepositoryCatalog: vi.fn(),
+    retryRepositoryCatalog: vi.fn(),
     removeRepository: vi.fn(),
     addModel: vi.fn(),
     editModelProvider: vi.fn(),
@@ -139,6 +147,54 @@ describe('GithubReviewerCard', () => {
     expect(remove?.querySelector('svg')).not.toBeNull()
     act(() => { add?.click() })
     expect(injected.addRepository).toHaveBeenCalledTimes(1)
+  })
+
+  it('filters editable repository suggestions by owner and lazy-loads on focus', () => {
+    const injected = render(state({
+      repositories: { rows: [{ owner: 'alpha', repository: '' }], overridden: true, invalid: true },
+      repositoryCatalog: {
+        loading: false,
+        loaded: true,
+        error: null,
+        repositories: [
+          { owner: 'alpha', repository: 'one', fullName: 'alpha/one', private: false },
+          { owner: 'alpha', repository: 'two', fullName: 'alpha/two', private: true },
+          { owner: 'beta', repository: 'other', fullName: 'beta/other', private: false },
+        ],
+      },
+    }))
+    expand()
+
+    const inputs = container.querySelectorAll<HTMLInputElement>('[role="combobox"]')
+    act(() => { inputs[1]?.focus() })
+    expect(injected.ensureRepositoryCatalog).toHaveBeenCalledTimes(1)
+    const visibleOptions = [...container.querySelectorAll<HTMLElement>('[role="option"]')]
+      .filter(option => !option.closest('[hidden]'))
+    expect(visibleOptions.map(option => option.textContent)).toEqual(['one', 'two'])
+    expect(visibleOptions.every(option => option.tabIndex === -1)).toBe(true)
+
+    act(() => {
+      inputs[1]?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    })
+    expect(injected.editRepository).not.toHaveBeenCalled()
+    act(() => {
+      inputs[1]?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
+    })
+    act(() => {
+      inputs[1]?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    })
+    expect(injected.editRepository).toHaveBeenCalledWith(0, 'repository', 'one')
+  })
+
+  it('warns for catalog misses without disabling manual save', () => {
+    render(state({
+      dirty: true,
+      repositories: { rows: [{ owner: 'manual', repository: 'repo' }], overridden: true, invalid: false },
+    }))
+    expand()
+
+    expect(container.textContent).toContain(en.repositoryCatalogUnknown)
+    expect(container.querySelector<HTMLButtonElement>('.ghr-primary')?.disabled).toBe(false)
   })
 
   it('renders provider and model selects from the Host model catalog', () => {

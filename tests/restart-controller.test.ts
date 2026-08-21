@@ -52,6 +52,23 @@ describe('ReviewerRestartController', () => {
     expect(disposed).toEqual([1])
   })
 
+  it('forwards repository catalogs only through the committed runtime', async () => {
+    const repositories = [{ owner: 'owner', repository: 'repo', fullName: 'owner/repo', private: true }]
+    const listAccessibleRepositories = vi.fn(async () => repositories)
+    const factory = vi.fn(async (config: ResolvedAccountConfig, generation: number): Promise<RestartableReviewerRuntime> => ({
+      ...fakeRuntime(config, generation, []),
+      listAccessibleRepositories,
+    }))
+    const controller = new ReviewerRestartController(factory, recordingLogger([]))
+
+    await expect(controller.listAccessibleRepositories()).rejects.toThrow('unavailable')
+    await controller.start(account('owner/repo'))
+    await expect(controller.listAccessibleRepositories()).resolves.toEqual(repositories)
+    expect(listAccessibleRepositories).toHaveBeenCalledTimes(1)
+    await controller.dispose()
+    await expect(controller.listAccessibleRepositories()).rejects.toThrow('disposed')
+  })
+
   it('does not restart for a deeply equal config', async () => {
     const factory = vi.fn(async (config: ResolvedAccountConfig, generation: number) => fakeRuntime(config, generation, []))
     const controller = new ReviewerRestartController(factory, recordingLogger([]))

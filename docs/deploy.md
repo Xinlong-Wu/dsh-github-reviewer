@@ -111,7 +111,7 @@ profile 的 `pnpm-workspace.yaml` 里 `autoInstallPeers: false`，pnpm 只会安
 
 多账户 = 在同一个 `- insert:` 列表里再放一行相同 `name` 的实例（id 不同），各自独立轮询。`uiSettings` 默认为 `true`，因此新增账户必须显式设置 `uiSettings: false`；只有默认实例拥有固定的 Web 设置命名空间。
 
-Web profile 提供 settings 与对应 Client slot 时，设置页会出现 GitHub reviewer 卡片。它们通过可选 inject 接入：缺失 settings、workspace 或 Client UI 依赖只会让对应伴生功能等待，不会阻塞 Host reviewer。卡片保存后只会异步重启 reviewer 内部 runtime，不会重启整个 DSH 进程。
+Web profile 提供 settings 与对应 Client slot 时，设置页会出现 GitHub reviewer 卡片。仓库字段会通过同一凭据列出 PAT 可访问或当前 App 安装可访问的仓库，但始终保留手动输入；若目录请求失败，保存仍可用。它们通过可选 inject 接入：缺失 settings、workspace 或 Client UI 依赖只会让对应伴生功能等待，不会阻塞 Host reviewer。卡片保存后只会异步重启 reviewer 内部 runtime，不会重启整个 DSH 进程。
 
 **4. 创建 PAT**（PAT 模式）：GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens，仅授权目标仓库，权限：Contents: Read、Pull requests: Read & Write、Issues: Read & Write、Checks: Read（Metadata 自动附带）。
 

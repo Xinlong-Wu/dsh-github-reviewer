@@ -12,6 +12,8 @@ npm run coverage
 npm run build
 ```
 
+`typecheck` 与 `build` 会先运行 `scripts/generate-typert.mjs`，在临时合成 workspace 中为 Host Remote 生成 `lib/typert.host.*` 和 `lib/typert.remote-client.*`；不要手动编辑这些产物。
+
 ## 已知限制与待办
 
 - 游标存在 harness 存储域中；当后端是单机 JSON 文件时，两台主机跑同一账户仍会重复轮询。PR 会话经 harness 持久化，但评审*触发*状态没有（LingoBridge 把两者都放在其账户 store 中）。

@@ -24,6 +24,70 @@ function prPayload(overrides: Record<string, unknown> = {}): Record<string, unkn
   }
 }
 
+describe('GitHubClient.listAccessibleRepositories', () => {
+  const payload = (owner: string, repository: string, isPrivate = false) => ({
+    owner: { login: owner },
+    name: repository,
+    full_name: `${owner}/${repository}`,
+    private: isPrivate,
+  })
+
+  it('lists PAT repositories with affiliation pagination, validation, deduplication, and sorting', async () => {
+    const fetchImpl = vi.fn(async (url: string | URL | Request) => {
+      const value = new URL(String(url))
+      expect(value.pathname).toBe('/user/repos')
+      expect(value.searchParams.get('affiliation')).toBe('owner,collaborator,organization_member')
+      const page = value.searchParams.get('page')
+      const repositories = page === '1'
+        ? [payload('Zoo', 'beta', true), ...Array.from({ length: 99 }, (_, index) => payload('fill', `repo-${index}`))]
+        : [payload('alpha', 'One'), payload('zoo', 'BETA'), { owner: { login: '' }, name: 'invalid', full_name: '/invalid' }]
+      return new Response(JSON.stringify(repositories), { status: 200 })
+    })
+
+    const repositories = await client(fetchImpl as typeof fetch).listAccessibleRepositories('user')
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+    expect(repositories).toHaveLength(101)
+    expect(repositories[0]).toEqual({ owner: 'alpha', repository: 'One', fullName: 'alpha/One', private: false })
+    expect(repositories.at(-1)).toEqual({ owner: 'zoo', repository: 'BETA', fullName: 'zoo/BETA', private: false })
+  })
+
+  it('lists GitHub App installation repositories from the response envelope', async () => {
+    const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const value = new URL(String(url))
+      expect(value.pathname).toBe('/installation/repositories')
+      expect(value.searchParams.get('affiliation')).toBeNull()
+      expect(init).toBeDefined()
+      expect((init?.headers as Record<string, string> | undefined)?.Authorization).toBe('Bearer tok')
+      return new Response(JSON.stringify({ repositories: [payload('owner', 'private-repo', true)] }), { status: 200 })
+    })
+
+    await expect(client(fetchImpl as typeof fetch).listAccessibleRepositories('installation')).resolves.toEqual([
+      { owner: 'owner', repository: 'private-repo', fullName: 'owner/private-repo', private: true },
+    ])
+  })
+
+  it('accepts an exact full-page safety cap when the lookahead page is empty', async () => {
+    const fetchImpl = vi.fn(async (url: string | URL | Request) => {
+      const page = Number(new URL(String(url)).searchParams.get('page'))
+      const repositories = page <= 50
+        ? Array.from({ length: 100 }, (_, index) => payload('owner', `repo-${page}-${index}`))
+        : []
+      return new Response(JSON.stringify(repositories), { status: 200 })
+    })
+
+    await expect(client(fetchImpl as typeof fetch).listAccessibleRepositories('user'))
+      .resolves.toHaveLength(5_000)
+    expect(fetchImpl).toHaveBeenCalledTimes(51)
+  })
+
+  it('rejects an invalid listing envelope', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ repositories: null }), { status: 200 }))
+    await expect(client(fetchImpl as typeof fetch).listAccessibleRepositories('installation'))
+      .rejects.toThrow('invalid repository listing response')
+  })
+})
+
 describe('GitHubClient.listOpenPullRequests', () => {
   it('paginates and parses PRs', async () => {
     const fetchImpl = vi.fn(async (url: string | URL | Request) => {

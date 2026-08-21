@@ -37,7 +37,7 @@
 
 多账户 = 再挂一行相同 `name` 的插件实例，各自独立轮询。默认实例无需显式配置即启用 Web 设置卡片，因为 `uiSettings` 默认为 `true`；额外账户继续由 composition 管理，并必须显式设置 `uiSettings: false`。
 
-Web 卡片标题为 **GitHub Reviewer**，默认折叠。它只覆盖 `repositories`、`pollIntervalMs`、工作区字段和 `review.*`：仓库使用可增删的“组织/仓库”双输入行，添加与删除使用图标按钮；模型候选使用来自 Host `llm.models` 目录的 provider/model 双下拉行，并按从上到下的优先级拖拽排序（手柄聚焦后也可用上、下方向键移动）。认证、GitHub URL 与 MCP 进程配置仍由 `cordis.patch.yml` 管理。保存时只写 settings 用户覆盖层，不改写 profile；清除字段后重新继承 profile 值。保存成功表示“已持久化并请求异步重启 reviewer runtime”，不是整个 DSH 进程重启完成。
+Web 卡片标题为 **GitHub Reviewer**，默认折叠。它只覆盖 `repositories`、`pollIntervalMs`、工作区字段和 `review.*`：仓库使用可增删的“所有者（组织或用户）/仓库”可搜索 Combobox 行，添加与删除使用图标按钮。首次聚焦时，Host 使用当前配置的凭据和 `baseUrl` 分页读取可访问仓库：PAT 模式调用 `/user/repos`，GitHub App 模式调用 `/installation/repositories`；所有者候选从返回的仓库中派生，仓库候选按当前所有者过滤。Token、私钥和原始 API 响应不会发送到浏览器。两个字段始终允许自由输入；目录加载失败或值不在目录中只显示非阻塞提示，不影响保存。模型候选使用来自 Host `llm.models` 目录的 provider/model 双下拉行，并按从上到下的优先级拖拽排序（手柄聚焦后也可用上、下方向键移动）。认证、GitHub URL 与 MCP 进程配置仍由 `cordis.patch.yml` 管理。保存时只写 settings 用户覆盖层，不改写 profile；清除字段后重新继承 profile 值。保存成功表示“已持久化并请求异步重启 reviewer runtime”，不是整个 DSH 进程重启完成。
 
 `settings`、`workspaceRegistry` 与 Client UI 都通过可选注入挂载：缺少或稍后卸载任一依赖时，Host reviewer 仍继续工作；settings 卸载后会回退到 composition 配置并只重启内部 reviewer runtime。
 

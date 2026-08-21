@@ -30,7 +30,7 @@
 dsh plugin --profile web add dsh-github-reviewer
 ```
 
-安装会把 bundle 加入 web profile，并注册一个默认启用的 `github-reviewer` 实例；`uiSettings` 默认也是 `true`。在下一次重启前，必须在 profile 的 `cordis.patch.yml` 中按 `id` 为该实例补齐认证和 MCP server，并按需配置仓库（无需再写 `disabled: false` 或 `uiSettings: true`，完整步骤见[部署与挂载](docs/deploy.md)）。设置页的 **GitHub Reviewer** 卡片默认折叠，仓库以“组织/仓库”行编辑，增删操作使用图标按钮；评审模型从 DSH 当前配置的 provider/model 下拉列表中选择，并按从上到下的优先级拖拽排序。仓库列表可以为空，此时 reviewer 保持运行但不轮询仓库。
+安装会把 bundle 加入 web profile，并注册一个默认启用的 `github-reviewer` 实例；`uiSettings` 默认也是 `true`。在下一次重启前，必须在 profile 的 `cordis.patch.yml` 中按 `id` 为该实例补齐认证和 MCP server，并按需配置仓库（无需再写 `disabled: false` 或 `uiSettings: true`，完整步骤见[部署与挂载](docs/deploy.md)）。设置页的 **GitHub Reviewer** 卡片默认折叠，仓库以“所有者（组织或用户）/仓库”行编辑：聚焦后会使用当前配置的 GitHub 凭据加载可访问仓库，并提供可搜索、可自由输入的候选菜单；目录加载失败或手动值不在目录中都不会阻止编辑和保存。增删操作使用图标按钮；评审模型从 DSH 当前配置的 provider/model 下拉列表中选择，并按从上到下的优先级拖拽排序。仓库列表可以为空，此时 reviewer 保持运行但不轮询仓库。
 
 ## 文档
 

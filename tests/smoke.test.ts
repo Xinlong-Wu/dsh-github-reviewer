@@ -178,6 +178,28 @@ describe('plugin wiring through a real Cordis context', () => {
     await fiber.dispose()
   })
 
+  it('allows secondary uiSettings:false accounts beside the singleton catalog Remote', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', { status: 200 })))
+    const ctx = new Context()
+    provideCoreServices(ctx)
+    const authentication = {
+      appId: '',
+      installationId: '',
+      privateKeyPath: '',
+      personalAccessToken: 'github_pat_xxx',
+    }
+
+    const primary = await ctx.plugin(plugin, validConfig('', { ...authentication, uiSettings: true }))
+    const secondary = await ctx.plugin(plugin, validConfig('', {
+      ...authentication,
+      name: 'secondary',
+      uiSettings: false,
+    }))
+
+    await secondary.dispose()
+    await primary.dispose()
+  })
+
   it('activates with a personal access token and never exchanges an App JWT', async () => {
     const fetchMock = vi.fn(async () => new Response('[]', { status: 200 }))
     vi.stubGlobal('fetch', fetchMock)

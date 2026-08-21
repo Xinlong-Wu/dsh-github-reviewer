@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 vi.mock('@deepseek-ai/dsh-client-ui-primitives', async () => {
   const runtime = await import('react')
   const Icon = () => runtime.createElement('svg')
-  return { IconPlusOutline16: Icon, IconTrashOutline16: Icon }
+  return { IconChevronDownOutline14: Icon, IconPlusOutline16: Icon, IconTrashOutline16: Icon }
 })
 
 vi.mock('@deepseek-ai/dsh-client-runtime/client', () => ({
@@ -54,6 +54,7 @@ describe('github-reviewer Client apply', () => {
       result: { ok: true as const, value: { groups: [], failures: [] } },
     }))
     const handlers = new Map<string, (...args: unknown[]) => void>()
+    const mountDispose = vi.fn()
     const remoteDisposers = [vi.fn(), vi.fn()]
     let remoteIndex = 0
     const connectionDispose = vi.fn()
@@ -76,6 +77,10 @@ describe('github-reviewer Client apply', () => {
         if (typeof dispose === 'function') effects.push(dispose)
       },
       remote: {
+        $mount: vi.fn(async () => mountDispose),
+        githubReviewerCatalog: {
+          repositories: vi.fn(async () => ({ ok: true as const, value: { repositories: [] } })),
+        },
         $on: (event: string, handler: (...args: unknown[]) => void) => {
           handlers.set(event, handler)
           return remoteDisposers[remoteIndex++]
@@ -92,7 +97,7 @@ describe('github-reviewer Client apply', () => {
       },
     }
 
-    apply(ctx as never)
+    await apply(ctx as never)
     await vi.waitFor(() => expect(models).toHaveBeenCalledTimes(1))
 
     handlers.get('llm/adapters-updated')?.()
@@ -104,6 +109,7 @@ describe('github-reviewer Client apply', () => {
     expect(register).toHaveBeenCalledTimes(1)
 
     for (const dispose of effects.reverse()) await dispose()
+    expect(mountDispose).toHaveBeenCalledTimes(1)
     expect(remoteDisposers[0]).toHaveBeenCalledTimes(1)
     expect(remoteDisposers[1]).toHaveBeenCalledTimes(1)
     expect(connectionDispose).toHaveBeenCalledTimes(1)

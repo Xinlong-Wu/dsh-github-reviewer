@@ -13,6 +13,7 @@ import type {} from '@deepseek-ai/dsh-session-persistence'
 import type {} from '@deepseek-ai/dsh-storage-domain'
 import type {} from '@deepseek-ai/dsh-workspace'
 import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
+import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import {
   accountWithReviewerSettings,
   Config,
@@ -25,6 +26,7 @@ import {
 import type { Config as PluginConfig, ReviewerSettings } from './config.ts'
 import { StaticTokenSource } from './github/auth.ts'
 import { cordisLogger } from './poller.ts'
+import type { RepositoryCatalog } from './repository-catalog-contract.ts'
 import { ReviewerRestartController } from './restart-controller.ts'
 import { sessionKeyPrefix } from './session-key.ts'
 import { WorkspaceCoordinator } from './workspace-coordinator.ts'
@@ -43,6 +45,37 @@ export type { PullRequest, Repository, ReviewInstructions } from './github/model
 export { StaticTokenSource }
 export type { TokenSource } from './github/auth.ts'
 export type { ReviewDriver } from './poller.ts'
+export type { AccessibleRepository, RepositoryCatalog } from './repository-catalog-contract.ts'
+
+/** Construction options supplied by the owning function plugin. */
+export interface RepositoryCatalogRemoteConfig {
+  controller: ReviewerRestartController
+  logger: ReturnType<typeof cordisLogger>
+}
+
+/**
+ * Read-only Remote namespace consumed by this package's browser settings card.
+ */
+export class RepositoryCatalogRemote extends TypertRemoteService {
+  constructor(
+    ctx: Context,
+    private readonly options: RepositoryCatalogRemoteConfig,
+  ) {
+    super(ctx, 'githubReviewerCatalog')
+  }
+
+  /** Return the current credential's accessible repository catalog. */
+  @Remote
+  async repositories(signal?: AbortSignal): Promise<RepositoryCatalog> {
+    try {
+      return { repositories: await this.options.controller.listAccessibleRepositories(signal) }
+    } catch (error) {
+      if (signal?.aborted) throw error
+      this.options.logger.warn(`github reviewer repository catalog failed: ${String(error)}`)
+      throw new Error('github repository catalog is unavailable')
+    }
+  }
+}
 
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'github-reviewer'
@@ -117,6 +150,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
     await controller.start(baseAccount)
 
     if (baseAccount.uiSettings) {
+      await ctx.plugin(RepositoryCatalogRemote, { controller, logger })
       let source: () => ReviewerSettings = () => reviewerSettingsOf(baseAccount)
       installSettingsSection(
         ctx,
