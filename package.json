@@ -1,7 +1,7 @@
 {
   "name": "dsh-github-reviewer",
   "description": "DeepSeek Harness plugin: automated GitHub PR review bot ported from LingoBridge",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publishConfig": {
     "access": "public"
   },
