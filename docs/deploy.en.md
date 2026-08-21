@@ -113,7 +113,7 @@ The package declares `dsh.bundle`, so `dsh plugin` automatically adds it to the 
 
 Multiple accounts = another instance with the same `name` inside the same `- insert:` list (different `id`), each running its own poll loop. Because `uiSettings` defaults to `true`, added accounts must explicitly set `uiSettings: false`; only the default instance may own the fixed Web settings namespace.
 
-When the Web profile supplies settings and the matching Client slot, the Settings page shows the GitHub reviewer card. These are optional injected companions: missing settings, workspace, or Client UI dependencies leave only that companion pending and do not block the Host reviewer. Saving the card asynchronously restarts only the reviewer's internal runtime, never the whole DSH process.
+When the Web profile supplies settings and the matching Client slot, the Settings page shows the GitHub reviewer card. Its repository fields list repositories accessible to the same PAT or current App installation while always retaining manual input; saving remains available if the catalog request fails. These are optional injected companions: missing settings, workspace, or Client UI dependencies leave only that companion pending and do not block the Host reviewer. Saving the card asynchronously restarts only the reviewer's internal runtime, never the whole DSH process.
 
 **4. Create a PAT** (PAT mode): GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens, scoped to the target repository only, with permissions: Contents: Read, Pull requests: Read & Write, Issues: Read & Write, Checks: Read (Metadata is implicit).
 

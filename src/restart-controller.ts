@@ -4,12 +4,14 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { ResolvedAccountConfig } from './config.ts'
 import type { PollLogger } from './logger.ts'
+import type { AccessibleRepository } from './repository-catalog-contract.ts'
 import { ReviewerRuntime } from './reviewer-runtime.ts'
 
 /** Runtime face used by the controller and its deterministic tests. */
 export interface RestartableReviewerRuntime {
   readonly config: ResolvedAccountConfig
   readonly generation: number
+  listAccessibleRepositories?(signal?: AbortSignal): Promise<AccessibleRepository[]>
   dispose(): Promise<void>
 }
 
@@ -92,6 +94,16 @@ export class ReviewerRestartController {
       if (runtime !== undefined) await runtime.dispose()
     })()
     return this.disposal
+  }
+
+  /** List repositories visible to the current committed runtime credential. */
+  async listAccessibleRepositories(signal?: AbortSignal): Promise<AccessibleRepository[]> {
+    if (this.closed) throw new Error('github reviewer restart controller is disposed')
+    const runtime = this.current
+    if (runtime?.listAccessibleRepositories === undefined) {
+      throw new Error('github reviewer runtime is temporarily unavailable')
+    }
+    return await runtime.listAccessibleRepositories(signal)
   }
 
   /** Current committed config, exposed for workspace coordination and tests. */

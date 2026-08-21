@@ -340,6 +340,79 @@ describe('GithubReviewerCardController', () => {
     await controller.dispose()
   })
 
+  it('lazy-loads the repository catalog once without touching staged rows or dirty state', async () => {
+    let resolveCatalog: ((value: { repositories: Array<{ owner: string; repository: string; fullName: string; private: boolean }> }) => void) | undefined
+    const loadCatalog = vi.fn(() => new Promise<{ repositories: Array<{ owner: string; repository: string; fullName: string; private: boolean }> }>((resolve) => {
+      resolveCatalog = resolve
+    }))
+    const controller = new GithubReviewerCardController(scope(), reviewerApi(), loadCatalog)
+    const face = controller.inject()
+
+    face.ensureRepositoryCatalog()
+    face.ensureRepositoryCatalog()
+    face.editRepository(0, 'repository', 'draft')
+    expect(loadCatalog).toHaveBeenCalledTimes(1)
+    resolveCatalog?.({ repositories: [{ owner: 'owner', repository: 'repo', fullName: 'owner/repo', private: false }] })
+    await vi.waitFor(() => expect(face.hooks.githubReviewerCard.getSnapshot().repositoryCatalog.loaded).toBe(true))
+
+    const snapshot = face.hooks.githubReviewerCard.getSnapshot()
+    expect(snapshot.repositories.rows).toEqual([{ owner: 'owner', repository: 'draft' }])
+    expect(snapshot.dirty).toBe(true)
+    controller.invalidateRepositoryCatalog()
+    const invalidated = face.hooks.githubReviewerCard.getSnapshot()
+    expect(invalidated.repositoryCatalog).toEqual({ loading: false, loaded: false, error: null, repositories: [] })
+    expect(invalidated.repositories.rows).toEqual([{ owner: 'owner', repository: 'draft' }])
+    expect(invalidated.dirty).toBe(true)
+    await controller.dispose()
+  })
+
+  it('reports repository catalog failure without affecting manual edits or retry', async () => {
+    const loadCatalog = vi.fn()
+      .mockResolvedValueOnce({
+        repositories: [{ owner: 'old', repository: 'repo', fullName: 'old/repo', private: false }],
+      })
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce({ repositories: [] })
+    const controller = new GithubReviewerCardController(scope(), reviewerApi(), loadCatalog)
+    const face = controller.inject()
+
+    face.ensureRepositoryCatalog()
+    await vi.waitFor(() => expect(face.hooks.githubReviewerCard.getSnapshot().repositoryCatalog.loaded).toBe(true))
+    face.retryRepositoryCatalog()
+    await vi.waitFor(() => expect(face.hooks.githubReviewerCard.getSnapshot().repositoryCatalog.error).toBe('offline'))
+    expect(face.hooks.githubReviewerCard.getSnapshot().repositoryCatalog.repositories).toEqual([])
+    face.ensureRepositoryCatalog()
+    expect(loadCatalog).toHaveBeenCalledTimes(2)
+    face.editRepository(0, 'owner', 'manual')
+    expect(face.hooks.githubReviewerCard.getSnapshot().repositories.rows[0]?.owner).toBe('manual')
+
+    face.retryRepositoryCatalog()
+    await vi.waitFor(() => expect(face.hooks.githubReviewerCard.getSnapshot().repositoryCatalog.loaded).toBe(true))
+    expect(loadCatalog).toHaveBeenCalledTimes(3)
+    await controller.dispose()
+  })
+
+  it('fences late repository catalog generations', async () => {
+    const resolvers: Array<(value: { repositories: Array<{ owner: string; repository: string; fullName: string; private: boolean }> }) => void> = []
+    const loadCatalog = vi.fn(() => new Promise<{ repositories: Array<{ owner: string; repository: string; fullName: string; private: boolean }> }>((resolve) => {
+      resolvers.push(resolve)
+    }))
+    const controller = new GithubReviewerCardController(scope(), reviewerApi(), loadCatalog)
+    const face = controller.inject()
+
+    const first = controller.refreshRepositoryCatalog()
+    const second = controller.refreshRepositoryCatalog()
+    resolvers[1]?.({ repositories: [{ owner: 'new', repository: 'repo', fullName: 'new/repo', private: false }] })
+    await second
+    resolvers[0]?.({ repositories: [{ owner: 'stale', repository: 'repo', fullName: 'stale/repo', private: false }] })
+    await first
+
+    expect(face.hooks.githubReviewerCard.getSnapshot().repositoryCatalog.repositories[0]?.owner).toBe('new')
+    face.editRepository(0, 'owner', 'manual')
+    expect(face.hooks.githubReviewerCard.getSnapshot().repositories.rows[0]?.owner).toBe('manual')
+    await controller.dispose()
+  })
+
   it('preserves a draft when the Host rejects the batch', async () => {
     const mutate = vi.fn(async () => ({
       id: 1,

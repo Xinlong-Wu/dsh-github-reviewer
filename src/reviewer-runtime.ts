@@ -10,14 +10,18 @@ import { AgentRunner } from './agent-runner.ts'
 import type { ResolvedAccountConfig } from './config.ts'
 import { cursorDomainSpec, StorageDomainCursorStore } from './cursor-store.ts'
 import { AppTokenSource, StaticTokenSource } from './github/auth.ts'
+import type { TokenSource } from './github/auth.ts'
 import { GitHubClient } from './github/client.ts'
 import type { PollLogger } from './logger.ts'
+import type { AccessibleRepository } from './repository-catalog-contract.ts'
 import { AccountPoller } from './poller.ts'
 
 interface RuntimePluginConfig {
   account: ResolvedAccountConfig
   logger: PollLogger
   generation: number
+  tokenSource: TokenSource
+  client: GitHubClient
   onSessionReady: (sessionId: SessionId, workspaceDir: string) => void
 }
 
@@ -28,16 +32,7 @@ interface RuntimeFiber {
 const RuntimePlugin = {
   name: 'github-reviewer-runtime',
   async apply(ctx: Context, options: RuntimePluginConfig): Promise<void> {
-    const { account, logger, generation, onSessionReady } = options
-    const tokenSource = account.personalAccessToken !== ''
-      ? new StaticTokenSource(account.personalAccessToken)
-      : await AppTokenSource.fromFile(
-          account.appId,
-          account.installationId,
-          account.privateKeyPath,
-          account.baseUrl,
-        )
-    const client = new GitHubClient(account.baseUrl, tokenSource)
+    const { account, logger, generation, tokenSource, client, onSessionReady } = options
     const domain = await ctx.storageDomain.open(cursorDomainSpec)
     try {
       const store = new StorageDomainCursorStore(domain.table('accounts'), account.name)
@@ -92,6 +87,8 @@ export class ReviewerRuntime {
     readonly config: ResolvedAccountConfig,
     readonly generation: number,
     private readonly fiber: RuntimeFiber,
+    private readonly client: GitHubClient,
+    private readonly catalogAuthentication: 'user' | 'installation',
   ) {}
 
   /** Start one fully initialized runtime generation. */
@@ -102,8 +99,30 @@ export class ReviewerRuntime {
     generation: number,
     onSessionReady: (sessionId: SessionId, workspaceDir: string) => void,
   ): Promise<ReviewerRuntime> {
-    const fiber = await ctx.plugin(RuntimePlugin, { account: config, logger, generation, onSessionReady })
-    return new ReviewerRuntime(config, generation, fiber)
+    const catalogAuthentication = config.personalAccessToken !== '' ? 'user' : 'installation'
+    const tokenSource = config.personalAccessToken !== ''
+      ? new StaticTokenSource(config.personalAccessToken)
+      : await AppTokenSource.fromFile(
+          config.appId,
+          config.installationId,
+          config.privateKeyPath,
+          config.baseUrl,
+        )
+    const client = new GitHubClient(config.baseUrl, tokenSource)
+    const fiber = await ctx.plugin(RuntimePlugin, {
+      account: config,
+      logger,
+      generation,
+      tokenSource,
+      client,
+      onSessionReady,
+    })
+    return new ReviewerRuntime(config, generation, fiber, client, catalogAuthentication)
+  }
+
+  /** List repositories visible to this committed runtime generation's credential. */
+  async listAccessibleRepositories(signal?: AbortSignal): Promise<AccessibleRepository[]> {
+    return await this.client.listAccessibleRepositories(this.catalogAuthentication, signal)
   }
 
   /** Stop the runtime and wait until every owned resource is quiescent. */

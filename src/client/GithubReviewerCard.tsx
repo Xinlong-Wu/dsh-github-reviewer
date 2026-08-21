@@ -10,6 +10,7 @@ import type {
   ReviewerTextField,
 } from './controller.ts'
 import type { GithubReviewerLocaleKey } from './locales.ts'
+import { RepositoryCombobox } from './RepositoryCombobox.tsx'
 import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
 
 export type GithubReviewerCardProps =
@@ -101,6 +102,9 @@ export function GithubReviewerCard(props: GithubReviewerCardProps) {
     || state.models.invalid
     || Object.values(state.fields).some(field => field.invalid)
   const selectableModelGroups = state.modelCatalog.groups.filter(group => group.models.length > 0)
+  const ownerOptions = [...new Map(state.repositoryCatalog.repositories
+    .map(repository => [repository.owner.toLowerCase(), repository.owner] as const)).values()]
+    .sort((left, right) => left.localeCompare(right, undefined, { sensitivity: 'base' }))
   const addModelDisabled = disabled || selectableModelGroups.length === 0
   return (
     <li className={open ? 'ghr-card ghr-card-open' : 'ghr-card'}>
@@ -127,47 +131,78 @@ export function GithubReviewerCard(props: GithubReviewerCardProps) {
               <div className="ghr-field-head">
                 <h4>{props.t('repositories')}</h4>
                 <FieldMeta field="repositories" state={state.repositories} disabled={disabled} reset={props.reset} t={props.t} />
+                {state.repositoryCatalog.loaded || state.repositoryCatalog.loading || state.repositoryCatalog.error !== null
+                  ? (
+                    <button
+                      type="button"
+                      disabled={state.repositoryCatalog.loading}
+                      onClick={props.retryRepositoryCatalog}
+                    >
+                      {props.t(state.repositoryCatalog.error === null ? 'refreshRepositoryCatalog' : 'retry')}
+                    </button>
+                    )
+                  : null}
               </div>
+              {state.repositoryCatalog.loading
+                ? <p className="ghr-hint" aria-live="polite">{props.t('repositoryCatalogLoading')}</p>
+                : null}
+              {state.repositoryCatalog.error !== null
+                ? <p className="ghr-catalog-status">{props.t('repositoryCatalogLoadFailed')}</p>
+                : null}
               {state.repositories.rows.length === 0
                 ? <p className="ghr-empty">{props.t('repositoriesEmpty')}</p>
                 : (
                   <div className="ghr-rows">
-                    {state.repositories.rows.map((row, index) => (
-                      <div className="ghr-row" key={index}>
-                        <label>
-                          <span>{props.t('repositoryOwner')}</span>
-                          <input
-                            type="text"
+                    {state.repositories.rows.map((row, index) => {
+                      const repositoryOptions = state.repositoryCatalog.repositories
+                        .filter(repository => repository.owner.localeCompare(row.owner, undefined, { sensitivity: 'base' }) === 0)
+                        .map(repository => repository.repository)
+                      const unknown = state.repositoryCatalog.loaded
+                        && row.owner.trim() !== ''
+                        && row.repository.trim() !== ''
+                        && !state.repositoryCatalog.repositories.some(repository =>
+                          repository.owner.localeCompare(row.owner, undefined, { sensitivity: 'base' }) === 0
+                          && repository.repository.localeCompare(row.repository, undefined, { sensitivity: 'base' }) === 0)
+                      const warningId = `github-reviewer-repository-${index}-warning`
+                      const describedBy = unknown
+                        ? `github-reviewer-repositories-hint ${warningId}`
+                        : 'github-reviewer-repositories-hint'
+                      return (
+                        <div className="ghr-row" key={index}>
+                          <RepositoryCombobox
+                            label={props.t('repositoryOwner')}
                             value={row.owner}
+                            options={ownerOptions}
                             disabled={disabled}
-                            aria-invalid={!row.owner.trim() || /[\s/]/.test(row.owner) || undefined}
-                            aria-describedby="github-reviewer-repositories-hint"
-                            onChange={(event) => { props.editRepository(index, 'owner', event.target.value) }}
+                            invalid={!row.owner.trim() || /[\s/]/.test(row.owner)}
+                            describedBy={describedBy}
+                            onLoad={props.ensureRepositoryCatalog}
+                            onChange={(value) => { props.editRepository(index, 'owner', value) }}
                           />
-                        </label>
-                        <label>
-                          <span>{props.t('repositoryName')}</span>
-                          <input
-                            type="text"
+                          <RepositoryCombobox
+                            label={props.t('repositoryName')}
                             value={row.repository}
+                            options={repositoryOptions}
                             disabled={disabled}
-                            aria-invalid={!row.repository.trim() || /[\s/]/.test(row.repository) || undefined}
-                            aria-describedby="github-reviewer-repositories-hint"
-                            onChange={(event) => { props.editRepository(index, 'repository', event.target.value) }}
+                            invalid={!row.repository.trim() || /[\s/]/.test(row.repository)}
+                            describedBy={describedBy}
+                            onLoad={props.ensureRepositoryCatalog}
+                            onChange={(value) => { props.editRepository(index, 'repository', value) }}
                           />
-                        </label>
-                        <button
-                          type="button"
-                          className="ghr-icon-button ghr-remove"
-                          disabled={disabled}
-                          aria-label={`${props.t('remove')}: ${row.owner}/${row.repository}, ${props.t('position')} ${index + 1}`}
-                          title={props.t('remove')}
-                          onClick={() => { props.removeRepository(index) }}
-                        >
-                          <IconTrashOutline16 size={14} />
-                        </button>
-                      </div>
-                    ))}
+                          <button
+                            type="button"
+                            className="ghr-icon-button ghr-remove"
+                            disabled={disabled}
+                            aria-label={`${props.t('remove')}: ${row.owner}/${row.repository}, ${props.t('position')} ${index + 1}`}
+                            title={props.t('remove')}
+                            onClick={() => { props.removeRepository(index) }}
+                          >
+                            <IconTrashOutline16 size={14} />
+                          </button>
+                          {unknown ? <p id={warningId} className="ghr-catalog-warning">{props.t('repositoryCatalogUnknown')}</p> : null}
+                        </div>
+                      )
+                    })}
                   </div>
                   )}
               <div className="ghr-collection-footer">

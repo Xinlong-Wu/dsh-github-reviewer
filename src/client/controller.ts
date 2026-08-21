@@ -7,6 +7,7 @@ import {
   type SettingsScopeSnapshot,
   type SnapshotStore,
 } from '@deepseek-ai/dsh-client-runtime/client'
+import type { AccessibleRepository, RepositoryCatalog } from '../repository-catalog-contract.ts'
 import type { ReviewerSettings, ReviewerSettingsModel } from '../settings-contract.ts'
 
 export const SETTINGS_NAMESPACE = 'github-reviewer'
@@ -59,6 +60,15 @@ export interface ReviewerModelCatalogState {
   groups: ReviewerModelCatalogGroup[]
 }
 
+export interface ReviewerRepositoryCatalogState {
+  loading: boolean
+  loaded: boolean
+  error: string | null
+  repositories: AccessibleRepository[]
+}
+
+export type RepositoryCatalogLoader = (signal?: AbortSignal) => Promise<RepositoryCatalog>
+
 export interface GithubReviewerCardState {
   available: boolean
   writable: boolean
@@ -67,6 +77,7 @@ export interface GithubReviewerCardState {
   failed: boolean
   fields: Record<ReviewerTextField, ReviewerFieldState>
   repositories: ReviewerCollectionState<RepositoryDraft>
+  repositoryCatalog: ReviewerRepositoryCatalogState
   models: ReviewerCollectionState<ReviewerSettingsModel>
   modelCatalog: ReviewerModelCatalogState
 }
@@ -77,6 +88,8 @@ export interface GithubReviewerCardFace {
   reset(field: ReviewerField): void
   addRepository(): void
   editRepository(index: number, key: keyof RepositoryDraft, text: string): void
+  ensureRepositoryCatalog(): void
+  retryRepositoryCatalog(): void
   removeRepository(index: number): void
   addModel(): void
   editModelProvider(index: number, provider: string): void
@@ -176,6 +189,7 @@ export class GithubReviewerCardController {
     failed: false,
     fields: emptyFields(),
     repositories: { rows: [], overridden: false, invalid: false },
+    repositoryCatalog: { loading: false, loaded: false, error: null, repositories: [] },
     models: { rows: [], overridden: false, invalid: false },
     modelCatalog: { loading: false, error: null, failures: [], groups: [] },
   })
@@ -187,11 +201,14 @@ export class GithubReviewerCardController {
   private disposed = false
   private saveTail: Promise<void> = Promise.resolve()
   private modelGeneration = 0
+  private repositoryGeneration = 0
+  private repositoryAbort: AbortController | undefined
   private readonly unsubscribe: () => void
 
   constructor(
     private readonly scope: SettingsScope<ReviewerSettings>,
     private readonly api: ReviewerApi,
+    private readonly loadRepositoryCatalog: RepositoryCatalogLoader = async () => ({ repositories: [] }),
   ) {
     this.unsubscribe = scope.subscribe(() => { this.acceptScope() })
     this.acceptScope()
@@ -205,6 +222,8 @@ export class GithubReviewerCardController {
       reset: field => { this.reset(field) },
       addRepository: () => { this.addRepository() },
       editRepository: (index, key, text) => { this.editRepository(index, key, text) },
+      ensureRepositoryCatalog: () => { this.ensureRepositoryCatalog() },
+      retryRepositoryCatalog: () => { void this.refreshRepositoryCatalog() },
       removeRepository: index => { this.removeRepository(index) },
       addModel: () => { this.addModel() },
       editModelProvider: (index, provider) => { this.editModelProvider(index, provider) },
@@ -220,8 +239,62 @@ export class GithubReviewerCardController {
   async dispose(): Promise<void> {
     this.disposed = true
     ++this.modelGeneration
+    ++this.repositoryGeneration
+    this.repositoryAbort?.abort()
+    this.repositoryAbort = undefined
     this.unsubscribe()
     await this.saveTail
+  }
+
+  ensureRepositoryCatalog(): void {
+    const catalog = this.store.getSnapshot().repositoryCatalog
+    if (catalog.loading || catalog.loaded || catalog.error !== null) return
+    void this.refreshRepositoryCatalog()
+  }
+
+  invalidateRepositoryCatalog(): void {
+    if (this.disposed) return
+    ++this.repositoryGeneration
+    this.repositoryAbort?.abort()
+    this.repositoryAbort = undefined
+    this.store.update((draft) => {
+      draft.repositoryCatalog.loading = false
+      draft.repositoryCatalog.loaded = false
+      draft.repositoryCatalog.error = null
+      draft.repositoryCatalog.repositories = []
+    })
+  }
+
+  async refreshRepositoryCatalog(): Promise<void> {
+    if (this.disposed) return
+    const generation = ++this.repositoryGeneration
+    this.repositoryAbort?.abort()
+    const abort = new AbortController()
+    this.repositoryAbort = abort
+    this.store.update((draft) => {
+      draft.repositoryCatalog.loading = true
+      draft.repositoryCatalog.error = null
+    })
+    try {
+      const catalog = await this.loadRepositoryCatalog(abort.signal)
+      if (this.disposed || abort.signal.aborted || generation !== this.repositoryGeneration) return
+      this.store.update((draft) => {
+        draft.repositoryCatalog.loading = false
+        draft.repositoryCatalog.loaded = true
+        draft.repositoryCatalog.error = null
+        draft.repositoryCatalog.repositories = catalog.repositories.map(repository => ({ ...repository }))
+      })
+    } catch (error) {
+      if (this.disposed || abort.signal.aborted || generation !== this.repositoryGeneration) return
+      this.store.update((draft) => {
+        draft.repositoryCatalog.loading = false
+        draft.repositoryCatalog.loaded = false
+        draft.repositoryCatalog.error = error instanceof Error ? error.message : String(error)
+        draft.repositoryCatalog.repositories = []
+      })
+    } finally {
+      if (this.repositoryAbort === abort) this.repositoryAbort = undefined
+    }
   }
 
   async refreshModelCatalog(): Promise<void> {
