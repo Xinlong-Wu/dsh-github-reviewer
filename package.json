@@ -26,24 +26,24 @@
       "types": "./lib/repository-catalog-contract.d.ts",
       "default": "./lib/repository-catalog-contract.js"
     },
-    "./typert": {
-      "types": "./lib/typert.host.d.ts",
-      "default": "./lib/typert.host.js"
+    "./typeert": {
+      "types": "./lib/typeert.host.d.ts",
+      "default": "./lib/typeert.host.js"
     },
     "./remote": {
-      "types": "./lib/typert.remote-client.d.ts",
-      "default": "./lib/typert.remote-client.js"
+      "types": "./lib/typeert.remote-client.d.ts",
+      "default": "./lib/typeert.remote-client.js"
     },
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
   "files": [
     "lib/**/*",
-    "lib/typert.host.js",
-    "lib/typert.host.d.ts",
-    "lib/typert.remote-client.js",
-    "lib/typert.remote-client.d.ts",
-    "!lib/typert.remote-client.d.ts.map",
+    "lib/typeert.host.js",
+    "lib/typeert.host.d.ts",
+    "lib/typeert.remote-client.js",
+    "lib/typeert.remote-client.d.ts",
+    "!lib/typeert.remote-client.d.ts.map",
     "docs/**/*",
     "cordis.patch.yml",
     "cordis.yml.example"
@@ -69,8 +69,8 @@
   "scripts": {
     "clean": "node -e \"fs.rmSync('lib',{recursive:true,force:true})\"",
     "build:host": "tsc -p tsconfig.json",
-    "build:typert": "node scripts/generate-typert.mjs",
-    "build:contracts": "npm run build:host && npm run build:typert",
+    "build:typeert": "node scripts/generate-typeert.mjs",
+    "build:contracts": "npm run build:host && npm run build:typeert",
     "build:client:types": "tsc -p tsconfig.client.json",
     "build:client": "tsdown --config tsdown.client.config.ts",
     "build": "npm run clean && npm run build:contracts && npm run build:client:types && npm run build:client",
@@ -105,9 +105,9 @@
     "@deepseek-ai/dsh-storage-domain": "0.1.0-rc.7",
     "@deepseek-ai/dsh-system-prompt": "0.1.0-rc.7",
     "@deepseek-ai/dsh-tools": "0.1.0-rc.7",
-    "@deepseek-ai/dsh-typert-protocol": "0.1.0-rc.7",
+    "@deepseek-ai/dsh-typeert-protocol": "0.1.0-rc.7",
     "@deepseek-ai/dsh-workspace": "0.1.0-rc.7",
-    "@deepseek-ai/schemastery": "^3.18.1",
+    "@deepseek-ai/schemastry": "^3.18.1",
     "react": "^18.2.0"
   },
   "peerDependenciesMeta": {
@@ -144,7 +144,6 @@
     "@deepseek-ai/dsh-skill": "0.1.0-rc.7",
     "@deepseek-ai/dsh-subagent": "0.1.0-rc.7",
     "@deepseek-ai/dsh-tools": "0.1.0-rc.7",
-    "@deepseek-ai/dsh-typert-protocol": "0.1.0-rc.7",
     "@deepseek-ai/dsh-user-approval": "0.1.0-rc.7",
     "@deepseek-ai/dsh-user-questions": "0.1.0-rc.7",
     "@deepseek-ai/dsh-workspace": "0.1.0-rc.7"
@@ -172,15 +171,14 @@
     "@deepseek-ai/dsh-system-prompt": "0.1.0-rc.7",
     "@deepseek-ai/dsh-timeout": "0.1.0-rc.7",
     "@deepseek-ai/dsh-tools": "0.1.0-rc.7",
-    "@deepseek-ai/dsh-typert-generator": "0.1.0-rc.7",
-    "@deepseek-ai/dsh-typert-protocol": "0.1.0-rc.7",
-    "@deepseek-ai/dsh-typert-registry": "0.1.0-rc.7",
+    "@deepseek-ai/dsh-typeert-generator": "0.1.0-rc.7",
+    "@deepseek-ai/dsh-typeert-protocol": "0.1.0-rc.7",
     "@deepseek-ai/dsh-workspace": "0.1.0-rc.7",
-    "@deepseek-ai/schemastery": "^3.18.1",
+    "@deepseek-ai/schemastry": "^3.18.1",
     "@types/node": "^26.2.0",
     "@types/react": "^18.3.1",
     "@types/react-dom": "^18.3.1",
-    "@vitest/coverage-v8": "^3.2.7",
+    "@vitest/coverage-v8": "^4.1.10",
     "jsdom": "^26.1.0",
     "oxlint": "^1.79.0",
     "publint": "^0.3.23",
