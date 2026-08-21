@@ -3,7 +3,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-agent-default-model'
-import type {} from '@deepseek-ai/dsh-session'
+import type { SessionId } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-session-persistence'
 import type {} from '@deepseek-ai/dsh-storage-domain'
 import { AgentRunner } from './agent-runner.ts'
@@ -18,6 +18,7 @@ interface RuntimePluginConfig {
   account: ResolvedAccountConfig
   logger: PollLogger
   generation: number
+  onSessionReady: (sessionId: SessionId, workspaceDir: string) => void
 }
 
 interface RuntimeFiber {
@@ -27,7 +28,7 @@ interface RuntimeFiber {
 const RuntimePlugin = {
   name: 'github-reviewer-runtime',
   async apply(ctx: Context, options: RuntimePluginConfig): Promise<void> {
-    const { account, logger, generation } = options
+    const { account, logger, generation, onSessionReady } = options
     const tokenSource = account.personalAccessToken !== ''
       ? new StaticTokenSource(account.personalAccessToken)
       : await AppTokenSource.fromFile(
@@ -53,6 +54,7 @@ const RuntimePlugin = {
         ...llm === undefined ? {} : { llm },
         ...sessionTitle === undefined ? {} : { sessionTitle },
         ...sessionPersistence === undefined ? {} : { sessionPersistence },
+        onSessionReady: sessionId => { onSessionReady(sessionId, account.workspaceDir) },
         tokenSource,
         logger,
       })
@@ -98,8 +100,9 @@ export class ReviewerRuntime {
     config: ResolvedAccountConfig,
     logger: PollLogger,
     generation: number,
+    onSessionReady: (sessionId: SessionId, workspaceDir: string) => void,
   ): Promise<ReviewerRuntime> {
-    const fiber = await ctx.plugin(RuntimePlugin, { account: config, logger, generation })
+    const fiber = await ctx.plugin(RuntimePlugin, { account: config, logger, generation, onSessionReady })
     return new ReviewerRuntime(config, generation, fiber)
   }
 

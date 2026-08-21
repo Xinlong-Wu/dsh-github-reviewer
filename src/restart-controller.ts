@@ -1,6 +1,7 @@
 /** Serialized replacement and rollback of one account's reviewer runtime. */
 
 import type { Context } from '@deepseek-ai/cordis'
+import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { ResolvedAccountConfig } from './config.ts'
 import type { PollLogger } from './logger.ts'
 import { ReviewerRuntime } from './reviewer-runtime.ts'
@@ -46,9 +47,10 @@ export class ReviewerRestartController {
     ctx: Context,
     logger: PollLogger,
     onCommit: (config: ResolvedAccountConfig) => void,
+    onSessionReady: (sessionId: SessionId, workspaceDir: string) => void,
   ): ReviewerRestartController {
     return new ReviewerRestartController(
-      (config, generation) => ReviewerRuntime.start(ctx, config, logger, generation),
+      (config, generation) => ReviewerRuntime.start(ctx, config, logger, generation, onSessionReady),
       logger,
       onCommit,
     )

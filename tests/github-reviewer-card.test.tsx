@@ -181,6 +181,7 @@ describe('GithubReviewerCard', () => {
       dropEffect: 'none',
       setData(type: string, payload: string) { data.set(type, payload) },
       getData(type: string) { return data.get(type) ?? '' },
+      setDragImage: vi.fn(),
     }
     const dragStart = new Event('dragstart', { bubbles: true })
     Object.defineProperty(dragStart, 'dataTransfer', { value: dataTransfer })
@@ -194,11 +195,55 @@ describe('GithubReviewerCard', () => {
       rows[1].dispatchEvent(dragOver)
       rows[1].dispatchEvent(drop)
     })
+    expect(dataTransfer.setDragImage).toHaveBeenCalledWith(rows[0], 0, 0)
     expect(injected.moveModel).toHaveBeenCalledWith(0, 1)
 
     const refreshedHandles = container.querySelectorAll<HTMLButtonElement>('.ghr-drag-handle')
     act(() => { refreshedHandles[1].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true })) })
     expect(injected.moveModel).toHaveBeenCalledWith(1, 0)
+  })
+
+  it('clears a target shadow as soon as the pointer leaves the block', () => {
+    render(state({
+      models: {
+        rows: [{ provider: 'openai', model: 'gpt' }, { provider: 'deepseek', model: 'chat' }],
+        overridden: true,
+        invalid: false,
+      },
+    }))
+    expand()
+
+    const data = new Map<string, string>()
+    const dataTransfer = {
+      effectAllowed: 'none',
+      dropEffect: 'none',
+      setData(type: string, payload: string) { data.set(type, payload) },
+      getData(type: string) { return data.get(type) ?? '' },
+      setDragImage: vi.fn(),
+    }
+    const event = (type: string) => {
+      const value = new Event(type, { bubbles: true, cancelable: true })
+      Object.defineProperty(value, 'dataTransfer', { value: dataTransfer })
+      return value
+    }
+    const handles = container.querySelectorAll<HTMLButtonElement>('.ghr-drag-handle')
+    act(() => { handles[0].dispatchEvent(event('dragstart')) })
+
+    let target = container.querySelectorAll<HTMLDivElement>('.ghr-model-row')[1]
+    act(() => {
+      target.dispatchEvent(event('dragenter'))
+      target.dispatchEvent(event('dragenter'))
+    })
+    target = container.querySelectorAll<HTMLDivElement>('.ghr-model-row')[1]
+    expect(target.classList.contains('ghr-model-row-target')).toBe(true)
+
+    act(() => { target.dispatchEvent(event('dragleave')) })
+    target = container.querySelectorAll<HTMLDivElement>('.ghr-model-row')[1]
+    expect(target.classList.contains('ghr-model-row-target')).toBe(true)
+
+    act(() => { target.dispatchEvent(event('dragleave')) })
+    target = container.querySelectorAll<HTMLDivElement>('.ghr-model-row')[1]
+    expect(target.classList.contains('ghr-model-row-target')).toBe(false)
   })
 
   it('keeps keyboard focus on the candidate after it moves', () => {

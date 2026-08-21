@@ -26,6 +26,7 @@ import type { Config as PluginConfig, ReviewerSettings } from './config.ts'
 import { StaticTokenSource } from './github/auth.ts'
 import { cordisLogger } from './poller.ts'
 import { ReviewerRestartController } from './restart-controller.ts'
+import { sessionKeyPrefix } from './session-key.ts'
 import { WorkspaceCoordinator } from './workspace-coordinator.ts'
 
 export { Config }
@@ -56,19 +57,21 @@ export const GITHUB_REVIEWER_SETTINGS_NAMESPACE = settingsNamespace('github-revi
 const activeAccounts = new Map<string, symbol>()
 
 function acquireAccount(name: string): symbol {
-  if (activeAccounts.has(name)) {
+  const identity = sessionKeyPrefix(name)
+  if (activeAccounts.has(identity)) {
     throw new Error(
-      `github-reviewer.${name} is already active in this process; `
-      + 'two instances with the same account name would share cursor and session identities',
+      `github-reviewer.${name} is already active under a normalized account identity; `
+      + 'two instances would share cursor and session identities',
     )
   }
   const lease = Symbol(name)
-  activeAccounts.set(name, lease)
+  activeAccounts.set(identity, lease)
   return lease
 }
 
 function releaseAccount(name: string, lease: symbol): void {
-  if (activeAccounts.get(name) === lease) activeAccounts.delete(name)
+  const identity = sessionKeyPrefix(name)
+  if (activeAccounts.get(identity) === lease) activeAccounts.delete(identity)
 }
 
 /**
@@ -80,15 +83,32 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
   validateAccountRuntime(baseAccount.name, baseAccount)
   const accountLease = acquireAccount(baseAccount.name)
   const logger = cordisLogger(ctx.logger)
-  const workspace = new WorkspaceCoordinator(logger)
+  const workspace = new WorkspaceCoordinator(logger, async (signal) => {
+    const headers = new Map(ctx.sessions.list().map(session => [session.header.id, session.header]))
+    const persistence = ctx.get('sessionPersistence')
+    if (persistence === undefined) return { headers: [...headers.values()], complete: false }
+    try {
+      for (const header of await persistence.list(signal)) headers.set(header.id, header)
+      return { headers: [...headers.values()], complete: true }
+    } catch (error) {
+      if (signal.aborted) throw error
+      logger.warn(`github reviewer persisted session listing failed: ${String(error)}`)
+      return { headers: [...headers.values()], complete: false }
+    }
+  })
   const controller = ReviewerRestartController.production(
     ctx,
     logger,
     account => { workspace.request(account) },
+    (sessionId, workspaceDir) => { workspace.requestSession(sessionId, workspaceDir) },
   )
   let installed = false
 
   try {
+    ctx.inject(['sessionPersistence'], () => {
+      workspace.refreshExistingSessions()
+    })
+
     ctx.inject(['workspaceRegistry'], (workspaceCtx) => {
       const detach = workspace.attach(workspaceCtx.workspaceRegistry)
       return detach

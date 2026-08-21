@@ -26,6 +26,7 @@ import type { PullRequest, ReviewInstructions } from './github/model.ts'
 import { fullName } from './github/model.ts'
 import { buildChatSystemPrompt, buildReviewSystemPrompt, buildReviewUserPrompt } from './github/prompts.ts'
 import type { PollLogger } from './logger.ts'
+import { sessionKeyPrefix } from './session-key.ts'
 
 /** Runtime dependencies of one account's agent runner. */
 export interface AgentRunnerDeps {
@@ -55,6 +56,8 @@ export interface AgentRunnerDeps {
   }
   /** Durable session storage; absent in compositions without a persistence provider. */
   sessionPersistence?: SessionPersistence
+  /** Non-blocking notification after one reviewer session is live or resumed. */
+  onSessionReady?: (sessionId: SessionId) => void
   tokenSource: TokenSource
   logger: PollLogger
   /** Optional MCP host factory override, for tests. */
@@ -71,8 +74,7 @@ export interface ReviewTurnOutcome {
 
 /** Stable session key for one PR: account-scoped, repo and PR number based. */
 export function sessionKey(accountName: string, pr: PullRequest): string {
-  const safeAccount = accountName.replace(/[^a-zA-Z0-9_.-]+/g, '_')
-  return `github:${safeAccount}:${pr.base.repo.owner}:${pr.base.repo.name}:pr:${pr.number}`
+  return `${sessionKeyPrefix(accountName)}${pr.base.repo.owner}:${pr.base.repo.name}:pr:${pr.number}`
 }
 
 /** Aggregate the last assistant text within one owned interval. */
@@ -229,11 +231,14 @@ export class AgentRunner {
   /** Return the live handle for a PR, creating or resuming its agent once. */
   private async ensureAgent(pr: PullRequest, signal: AbortSignal): Promise<AgentHandle> {
     const key = sessionKey(this.deps.accountName, pr)
+    const sessionId = SessionId(key)
     const live = this.handles.get(key)
-    if (live !== undefined) return live
+    if (live !== undefined) {
+      this.deps.onSessionReady?.(sessionId)
+      return live
+    }
 
     const toolSchemas = await this.fetchToolSchemas(signal)
-    const sessionId = SessionId(key)
     const selection = await this.resolveModel()
     const agentOptions = { provider: selection.provider, model: selection.model }
     const setup = (agentCtx: Context): void => {
@@ -288,6 +293,7 @@ export class AgentRunner {
       })
     }
     this.handles.set(key, handle)
+    this.deps.onSessionReady?.(sessionId)
     return handle
   }
 
