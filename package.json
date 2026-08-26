@@ -182,7 +182,7 @@
     "@types/react-dom": "^18.3.1",
     "@vitest/coverage-v8": "^4.1.10",
     "esbuild": "^0.28.2",
-    "jsdom": "^26.1.0",
+    "jsdom": "^30.0.1",
     "oxlint": "^1.79.0",
     "publint": "^0.3.23",
     "react": "^18.3.1",
