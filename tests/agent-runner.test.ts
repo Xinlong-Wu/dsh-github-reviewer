@@ -58,7 +58,7 @@ function fakeHandle(events: Array<Record<string, unknown>>) {
       get seq() {
         return events.length
       },
-      events: events as unknown as readonly SessionEvent[],
+      snapshotEvents: (from?: number) => events.slice(from ?? 0) as unknown as readonly SessionEvent[],
     },
     inbox: {},
     status: 'idle',
@@ -81,7 +81,7 @@ function fakeHandle(events: Array<Record<string, unknown>>) {
     handle,
     agent,
     followupMessages,
-    /** The raw mutable event list backing `agent.session.events`. */
+    /** The raw mutable event list backing `agent.session.snapshotEvents`. */
     events,
     resolveTurn(): void {
       resolveIdle?.()
@@ -157,7 +157,7 @@ interface MakeRunnerOptions {
   onSessionReady?: (sessionId: string) => void
 }
 
-function makeRunner(world: World, sessionPersistence?: { listSnapshots: () => Promise<Array<{ header: { id: string } }>> }, options: MakeRunnerOptions = {}) {
+function makeRunner(world: World, sessionPersistence?: { list: (options?: { signal?: AbortSignal }) => Promise<Array<{ header: { id: string } }>> }, options: MakeRunnerOptions = {}) {
   const hosts: Array<{ token: string; closed: boolean }> = []
   const runner = new AgentRunner({
     accountName: 'reviewer',
@@ -315,7 +315,7 @@ describe('AgentRunner agent lifecycle', () => {
   it('resumes a persisted PR session instead of creating a fresh one', async () => {
     const world = makeWorld()
     const sessionId = 'github:reviewer:owner:repo:pr:42'
-    const persistence = { listSnapshots: vi.fn(async () => [{ header: { id: sessionId } }]) }
+    const persistence = { list: vi.fn(async () => [{ header: { id: sessionId } }]) }
     const onSessionReady = vi.fn()
     const { runner } = makeRunner(world, persistence, { onSessionReady })
     const signal = new AbortController().signal
@@ -334,7 +334,7 @@ describe('AgentRunner agent lifecycle', () => {
 
   it('creates when persistence knows no such session', async () => {
     const world = makeWorld()
-    const persistence = { listSnapshots: vi.fn(async () => [{ header: { id: 'github:reviewer:other:pr:1' } }]) }
+    const persistence = { list: vi.fn(async () => [{ header: { id: 'github:reviewer:other:pr:1' } }]) }
     const { runner } = makeRunner(world, persistence)
     const signal = new AbortController().signal
 

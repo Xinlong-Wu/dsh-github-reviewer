@@ -23,11 +23,15 @@
 #   config: { thinking: enabled, models: [{ id: deepseek-chat, contextWindow: 128000 }] }
 # The agent loop + system-prompt assembly + tool pipeline. The deployment's
 # default model selection (agentDefaultModel) drives every review agent; the
-# plugin does not configure a model.
+# plugin does not configure a model. Since 0.2.1-rc.2, tool calls also need a
+# tool-executor plugin mounted (the base and web bundles ship both); a bare
+# spine composition without one ends every turn before tools run.
 # - id: agent-spine
 #   name: '@deepseek-ai/dsh-agent-spine-demo'
 #   config:
 #     agents: [{ id: main, provider: deepseek-official, model: deepseek-chat, cwd: !!js process.cwd() }]
+# - id: tool-executor-native
+#   name: '@deepseek-ai/dsh-tool-executor-native'
 # Durable sessions: without this, PR sessions are memory-only across restarts.
 # - id: session-persistence-jsonl
 #   name: '@deepseek-ai/dsh-session-persistence-jsonl'
@@ -61,10 +65,11 @@
   config:
     # Account label used in logs and the cursor record key in the storage domain.
     name: org
-    # uiSettings defaults to true. Only this primary instance may own the fixed
-    # `github-reviewer` Web settings card; extra accounts below set it false.
-    # The card manages repositories, workspace fields, and review limits; auth,
-    # URLs, and MCP process settings remain composition-managed.
+    # uiSettings defaults to true. Only this primary instance may own the
+    # `github-reviewer` Plugins-page tab (a read-only repository catalog);
+    # extra accounts below set it false. Since the 0.2.x settings model,
+    # configuration edits go through the plugin's own config form on the
+    # installed-plugin row, not through the tab.
     # Required GitHub App identity. The App needs:
     #   - Pull requests: read/write (reviews and comments)
     #   - Contents: read (on the base repository, for
