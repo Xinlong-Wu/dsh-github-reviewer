@@ -91,7 +91,7 @@ describe('GithubReviewerCatalogTab', () => {
 
   it('shows the empty message when no repository is monitored', async () => {
     await renderTab(vi.fn(async () => ({ repositories: [] })))
-    expect(document.querySelector('.ghr-note')?.textContent).toBe(en.repositoriesEmpty)
+    expect(document.querySelector('.ghr-note')?.textContent).toBe(en.repositoryCatalogEmpty)
   })
 
   it('reports a failed Host catalog call and reloads from the refresh control', async () => {
@@ -152,6 +152,6 @@ describe('GithubReviewerCatalogTab', () => {
     const loadCatalog = vi.fn(async () => ({ repositories: [] }))
     await renderTab(loadCatalog, undefined)
     expect(document.querySelector('.ghr-config')).toBeNull()
-    expect(document.querySelector('.ghr-note')?.textContent).toBe(en.repositoriesEmpty)
+    expect(document.querySelector('.ghr-note')?.textContent).toBe(en.repositoryCatalogEmpty)
   })
 })

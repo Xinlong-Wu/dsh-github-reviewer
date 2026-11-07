@@ -5,6 +5,10 @@ export type GithubReviewerLocaleKey = keyof typeof en
 export const en = {
   title: 'GitHub Reviewer',
   intro: 'Monitored repositories and review runtime state for the configured reviewer instance. Edit its configuration on the instance row of the installed plugin.',
+  repositoryCatalog: 'Accessible repositories',
+  repositoryCatalogEmpty: 'The configured credential can access no repositories.',
+  anyone: 'Anyone (*)',
+  commandAuthorAssociationsHint: 'Decides who may trigger /review and /bot comments.',
   repositories: 'Monitored repositories',
   repositoriesEmpty: 'No repositories are monitored.',
   repositoryCatalogLoading: 'Loading accessible repositories…',
@@ -34,6 +38,10 @@ export const en = {
 export const zh: Record<GithubReviewerLocaleKey, string> = {
   title: 'GitHub Reviewer',
   intro: '已配置评审实例的监控仓库与运行状态；实例配置请在已安装插件的实例行中编辑。',
+  repositoryCatalog: '凭据可访问的仓库',
+  repositoryCatalogEmpty: '当前凭据无权访问任何仓库。',
+  anyone: '任何人（*）',
+  commandAuthorAssociationsHint: '决定谁可以通过 /review 与 /bot 触发评审。',
   repositories: '监控中的仓库',
   repositoriesEmpty: '当前没有监控任何仓库。',
   repositoryCatalogLoading: '正在加载有权访问的仓库…',
