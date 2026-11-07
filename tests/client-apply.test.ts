@@ -10,7 +10,7 @@ vi.mock('@deepseek-ai/dsh-client-ui-primitives', async () => {
 
 vi.mock('dsh-github-reviewer/remote', () => ({ default: { __remoteFace: true } }))
 
-import { apply } from '../src/client/index.ts'
+import { apply, inject } from '../src/client/index.ts'
 
 function clientContext() {
   const mountDispose = vi.fn()
@@ -38,6 +38,9 @@ function clientContext() {
 
 describe('github-reviewer Client apply', () => {
   it('mounts the Remote face, registers locale/styles, and contributes one Plugins-page tab', async () => {
+    // The catalog tab reads ctx.remote.githubReviewerCatalog: cordis requires
+    // the dotted namespace in the plugin's own inject list.
+    expect(inject).toContain('remote.githubReviewerCatalog')
     const { ctx, mountDispose, effects, register, localeRegister } = clientContext()
 
     await apply(ctx as never)

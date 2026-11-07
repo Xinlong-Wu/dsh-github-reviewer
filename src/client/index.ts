@@ -28,7 +28,7 @@ const styles = `
 `
 
 /** Required browser services; an incomplete Web composition leaves only this Client companion pending. */
-export const inject = ['slots', 'locale', 'remote']
+export const inject = ['slots', 'locale', 'remote', 'remote.githubReviewerCatalog']
 
 /** Register the Remote contribution, locale, styles, and the Plugins-page catalog tab. */
 export async function apply(ctx: ClientContext): Promise<void> {
