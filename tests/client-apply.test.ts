@@ -12,6 +12,19 @@ vi.mock('dsh-github-reviewer/remote', () => ({ default: { __remoteFace: true } }
 
 import { apply, inject } from '../src/client/index.ts'
 
+const configForm = {
+  getSnapshot: () => ({
+    status: 'ready' as const,
+    value: { repositories: ['owner/repo'] },
+    base: undefined,
+    user: undefined,
+    revision: 1,
+    writable: true,
+  }),
+  subscribe: vi.fn(() => vi.fn()),
+  mutate: vi.fn(async () => true),
+}
+
 function clientContext() {
   const mountDispose = vi.fn()
   const effects: Array<() => void | Promise<void>> = []
@@ -31,6 +44,7 @@ function clientContext() {
       callback(ctx)
       return vi.fn()
     },
+    configForms: { get: vi.fn(() => configForm) },
     remote: {
       $mount: vi.fn(async () => mountDispose),
       githubReviewerCatalog: { repositories },
@@ -41,15 +55,15 @@ function clientContext() {
       register,
     },
   }
-  return { ctx, mountDispose, effects, register, localeRegister, repositories, lateInjects }
+  return { ctx, mountDispose, effects, register, localeRegister, repositories, lateInjects, configFormsGet: ctx.configForms.get }
 }
 
 describe('github-reviewer Client apply', () => {
   it('mounts the Remote face, registers locale/styles, and contributes one Plugins-page tab', async () => {
     // The dotted namespace is a late companion (this apply mounts it), never
     // a static inject requirement: that would park the plugin PENDING forever.
-    expect(inject).toEqual(['slots', 'locale', 'remote'])
-    const { ctx, mountDispose, effects, register, localeRegister, lateInjects } = clientContext()
+    expect(inject).toEqual(['slots', 'locale', 'remote', 'configForms'])
+    const { ctx, mountDispose, effects, register, localeRegister, lateInjects, configFormsGet } = clientContext()
 
     await apply(ctx as never)
 
@@ -60,18 +74,21 @@ describe('github-reviewer Client apply', () => {
     expect(namespace).toBe('settings.githubReviewer')
     expect(Object.keys(dictionaries).sort()).toEqual(['en', 'zh'])
     expect(document.head.querySelector('style[data-plugin="dsh-github-reviewer"]')).not.toBeNull()
+    expect(configFormsGet).toHaveBeenCalledWith('github-reviewer')
     expect(register).toHaveBeenCalledTimes(2)
 
     const [registration] = register.mock.calls[0] as [{
       name: string
       id: string
       label: () => string
-      inject: () => { loadCatalog: unknown }
+      inject: () => { loadCatalog: unknown; configForm: unknown }
     }][]
     expect(registration.name).toBe('settings.plugins.tab')
     expect(registration.id).toBe('github-reviewer')
     expect(typeof registration.label()).toBe('string')
-    expect(typeof registration.inject().loadCatalog).toBe('function')
+    const injected = registration.inject()
+    expect(typeof injected.loadCatalog).toBe('function')
+    expect(injected.configForm).toBe(configForm)
 
     for (const dispose of effects.reverse()) await dispose()
     expect(mountDispose).toHaveBeenCalledTimes(1)

@@ -7,11 +7,16 @@ import type {} from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
 import githubReviewerRemote from 'dsh-github-reviewer/remote'
+// Type-only: the ctx.configForms merge (the settings form mirror).
+import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import { GithubReviewerCatalogTab } from './GithubReviewerCard.tsx'
 import { GithubReviewerRowConfigPage } from './RowConfigPage.tsx'
 import { en, zh } from './locales.ts'
 
 const LOCALE_NAMESPACE = 'settings.githubReviewer'
+
+/** The profile entry id whose config form the tab edits. */
+export const CONFIG_ENTRY_ID = 'github-reviewer'
 
 const styles = `
 .ghr-tab{display:grid;gap:14px;max-width:720px}
@@ -30,7 +35,7 @@ const styles = `
 `
 
 /** Required browser services; an incomplete Web composition leaves only this Client companion pending. */
-export const inject = ['slots', 'locale', 'remote']
+export const inject = ['slots', 'locale', 'remote', 'configForms']
 
 /** Register the Remote contribution, locale, styles, and the Plugins-page catalog tab. */
 export async function apply(ctx: ClientContext): Promise<void> {
@@ -59,7 +64,10 @@ export async function apply(ctx: ClientContext): Promise<void> {
       if (!result.ok) throw new Error(`${result.error.code}: ${result.error.message}`)
       return result.value
     }
-    const injected = { loadCatalog }
+    // The editable section binds the profile entry's live config form: the
+    // entry id is the bundle patch's row id (github-reviewer).
+    const configForm = ctx.configForms.get<Record<string, unknown>>(CONFIG_ENTRY_ID)
+    const injected = { loadCatalog, configForm }
 
     ctx.slots.inject('settings.plugins.tab', () => ctx.slots.register({
       name: 'settings.plugins.tab',
@@ -70,14 +78,13 @@ export async function apply(ctx: ClientContext): Promise<void> {
       inject: () => injected,
     }, GithubReviewerCatalogTab))
 
-    // The installed-plugin row's configuration page: the manager renders this
-    // keyed contribution with the entry's ConfigPageForm (from the volatile
-    // Config projection). The key must match the bundle patch's row id.
+    // The installed-plugin row's configuration page in the manager: the same
+    // form, reached from the installed-plugin row instead of the tab.
     ctx.slots.inject('plugins.row.config', () => ctx.slots.register({
       name: 'plugins.row.config',
       key: 'dsh-github-reviewer#github-reviewer',
       locale: LOCALE_NAMESPACE,
-      inject: () => ({}),
+      inject: () => ({ configForm }),
     }, GithubReviewerRowConfigPage))
   })
 }
