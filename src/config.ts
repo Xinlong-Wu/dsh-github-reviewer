@@ -166,11 +166,16 @@ export const Config = z.object({
   personalAccessToken: z.string().role('secret').default(''),
   baseUrl: z.string().default(DEFAULT_BASE_URL),
   webUrl: z.string().default(DEFAULT_WEB_URL),
-  pollIntervalMs: z.number().min(1000).default(DEFAULT_POLL_INTERVAL_MS),
-  repositories: z.array(z.string()).default([]),
-  workspaceDir: z.string().default(''),
-  workspaceTitle: z.string().default(DEFAULT_WORKSPACE_TITLE),
-  review: Review,
+  // Operator-tunable fields are volatile: the 0.2.x settings form only
+  // projects volatile fields, and form edits update them in place (the
+  // plugin observes loader/volatile-update and re-requests its runtime).
+  // Identity (name), auth, URLs, and MCP process settings stay
+  // composition-managed and never appear in the form.
+  pollIntervalMs: z.number().min(1000).default(DEFAULT_POLL_INTERVAL_MS).volatile(),
+  repositories: z.array(z.string()).default([]).volatile(),
+  workspaceDir: z.string().default('').volatile(),
+  workspaceTitle: z.string().default(DEFAULT_WORKSPACE_TITLE).volatile(),
+  review: Review.volatile(),
   mcp: Mcp,
 }) as unknown as z<Config>
 
@@ -181,11 +186,25 @@ export const Config = z.object({
  * @param account - raw account config.
  * @returns normalized account config with every default resolved.
  */
+
+/**
+ * Unwrap one volatile schema field. Schemastery validates volatile fields into
+ * get()-able wrappers (and leaves them undefined when absent); plain values
+ * from cordis.yml pass through unchanged.
+ */
+function unwrapVolatile<T>(value: T | { get(): T } | undefined): T | undefined {
+  const candidate = value as { get?: unknown } | undefined
+  if (value !== undefined && typeof candidate?.get === 'function') return candidate.get()
+  return value as T | undefined
+}
+
 export function normalizeAccountConfig(account: Config): ResolvedAccountConfig {
   const name = (account.name ?? DEFAULT_ACCOUNT_NAME).trim() || DEFAULT_ACCOUNT_NAME
   const repositories: string[] = []
   const seen = new Set<string>()
-  for (const raw of account.repositories) {
+  // Volatile schema fields stay undefined when absent: normalization owns the
+  // defaults the form schema no longer materializes.
+  for (const raw of unwrapVolatile(account.repositories) ?? []) {
     const parsed = parseRepository(raw)
     const value = parsed === undefined ? raw.trim() : `${parsed.owner}/${parsed.name}`
     if (value === '') continue
@@ -201,6 +220,7 @@ export function normalizeAccountConfig(account: Config): ResolvedAccountConfig {
     if (trimmed !== '') env[trimmed] = value
   }
   const args = (account.mcp?.args ?? []).map(value => value.trim()).filter(value => value !== '')
+  const review = unwrapVolatile(account.review)
   return {
     name,
     uiSettings: account.uiSettings ?? true,
@@ -210,17 +230,17 @@ export function normalizeAccountConfig(account: Config): ResolvedAccountConfig {
     personalAccessToken: (account.personalAccessToken ?? '').trim(),
     baseUrl: account.baseUrl.trim().replace(/\/+$/, ''),
     webUrl: account.webUrl.trim().replace(/\/+$/, ''),
-    pollIntervalMs: account.pollIntervalMs,
+    pollIntervalMs: unwrapVolatile(account.pollIntervalMs) ?? DEFAULT_POLL_INTERVAL_MS,
     repositories,
-    workspaceDir: resolveWorkspaceDir(account.workspaceDir?.trim() ?? '', name),
-    workspaceTitle: (account.workspaceTitle ?? DEFAULT_WORKSPACE_TITLE).trim() || DEFAULT_WORKSPACE_TITLE,
+    workspaceDir: resolveWorkspaceDir(unwrapVolatile(account.workspaceDir)?.trim() ?? '', name),
+    workspaceTitle: (unwrapVolatile(account.workspaceTitle) ?? DEFAULT_WORKSPACE_TITLE).trim() || DEFAULT_WORKSPACE_TITLE,
     review: {
-      maxToolCalls: account.review?.maxToolCalls ?? DEFAULT_MAX_TOOL_CALLS,
-      toolTimeoutMs: account.review?.toolTimeoutMs ?? DEFAULT_TOOL_TIMEOUT_MS,
-      toolResultLimit: account.review?.toolResultLimit ?? DEFAULT_TOOL_RESULT_LIMIT,
-      timeoutMs: account.review?.timeoutMs ?? DEFAULT_REVIEW_TIMEOUT_MS,
-      defaultInstructions: (account.review?.defaultInstructions ?? '').trim(),
-      commandAuthorAssociations: (account.review?.commandAuthorAssociations ?? DEFAULT_COMMAND_AUTHOR_ASSOCIATIONS)
+      maxToolCalls: review?.maxToolCalls ?? DEFAULT_MAX_TOOL_CALLS,
+      toolTimeoutMs: review?.toolTimeoutMs ?? DEFAULT_TOOL_TIMEOUT_MS,
+      toolResultLimit: review?.toolResultLimit ?? DEFAULT_TOOL_RESULT_LIMIT,
+      timeoutMs: review?.timeoutMs ?? DEFAULT_REVIEW_TIMEOUT_MS,
+      defaultInstructions: (review?.defaultInstructions ?? '').trim(),
+      commandAuthorAssociations: (review?.commandAuthorAssociations ?? DEFAULT_COMMAND_AUTHOR_ASSOCIATIONS)
         .map(value => value.trim().toUpperCase())
         .filter(value => value !== ''),
       models: (account.review?.models ?? [])

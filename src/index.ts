@@ -6,6 +6,8 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
+// Type-only: the `loader/volatile-update` Events merge (volatile config edits).
+import type {} from '@deepseek-ai/cordis-plugin-loader'
 import type {} from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-agent-default-model'
 import type {} from '@deepseek-ai/dsh-session'
@@ -141,8 +143,19 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
 
     await controller.start(baseAccount)
 
-    // Config edits flow through the Plugins-page config form into the profile
-    // patch; cordis reloads this plugin, and apply() starts a fresh runtime.
+    // Volatile config edits (the Plugins-page config form writes the profile
+    // patch and cordis updates the fields in place) re-request the runtime
+    // without a plugin reload — the same contract the old settings section
+    // implemented. Auth, URLs, MCP, and the account name are not volatile:
+    // changing those edits the patch for the next full restart.
+    ctx.on('loader/volatile-update', () => {
+      try {
+        controller.request(normalizeAccountConfig(config))
+      } catch (error) {
+        logger.warn(`github reviewer config update failed: ${String(error)}`)
+      }
+    })
+
     // The Web card is a read-only repository catalog over the typert Remote.
     if (baseAccount.uiSettings) {
       await ctx.plugin(RepositoryCatalogRemote, { controller, logger })
