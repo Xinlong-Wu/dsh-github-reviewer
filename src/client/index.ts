@@ -3,10 +3,12 @@
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-api-remotes/client'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
+import type {} from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
 import githubReviewerRemote from 'dsh-github-reviewer/remote'
 import { GithubReviewerCatalogTab } from './GithubReviewerCard.tsx'
+import { GithubReviewerRowConfigPage } from './RowConfigPage.tsx'
 import { en, zh } from './locales.ts'
 
 const LOCALE_NAMESPACE = 'settings.githubReviewer'
@@ -67,5 +69,15 @@ export async function apply(ctx: ClientContext): Promise<void> {
       locale: LOCALE_NAMESPACE,
       inject: () => injected,
     }, GithubReviewerCatalogTab))
+
+    // The installed-plugin row's configuration page: the manager renders this
+    // keyed contribution with the entry's ConfigPageForm (from the volatile
+    // Config projection). The key must match the bundle patch's row id.
+    ctx.slots.inject('plugins.row.config', () => ctx.slots.register({
+      name: 'plugins.row.config',
+      key: 'dsh-github-reviewer#github-reviewer',
+      locale: LOCALE_NAMESPACE,
+      inject: () => ({}),
+    }, GithubReviewerRowConfigPage))
   })
 }

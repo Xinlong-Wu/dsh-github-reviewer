@@ -60,7 +60,7 @@ describe('github-reviewer Client apply', () => {
     expect(namespace).toBe('settings.githubReviewer')
     expect(Object.keys(dictionaries).sort()).toEqual(['en', 'zh'])
     expect(document.head.querySelector('style[data-plugin="dsh-github-reviewer"]')).not.toBeNull()
-    expect(register).toHaveBeenCalledTimes(1)
+    expect(register).toHaveBeenCalledTimes(2)
 
     const [registration] = register.mock.calls[0] as [{
       name: string
