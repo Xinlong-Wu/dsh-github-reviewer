@@ -1,6 +1,6 @@
 /** Editable configuration page for the github-reviewer bundle row. */
 
-import { useSyncExternalStore, useState, type ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import type { ConfigFormSnapshot } from '@deepseek-ai/dsh-client-ui-settings/client'
 // Type-only: pulls the 'plugins.row.config' SlotMap merge (view + form props).
 import type {} from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
@@ -33,26 +33,12 @@ export type GithubReviewerRowConfigProps =
     readonly form?: RowConfigPageForm | undefined
   }
 
-/** Snapshot shown when the manager page renders the slot without a form. */
-const EMPTY_SNAPSHOT: ConfigFormSnapshot<Record<string, unknown>> = {
-  status: 'unavailable',
-  value: undefined,
-  base: undefined,
-  user: undefined,
-  revision: undefined,
-  writable: false,
-}
-
-const fallbackGet = (): ConfigFormSnapshot<Record<string, unknown>> => EMPTY_SNAPSHOT
-const fallbackSubscribe = (): (() => void) => () => {}
-
 /** Render the summary one-liner or the editable page for the bundle row. */
 export function GithubReviewerRowConfigPage(props: GithubReviewerRowConfigProps) {
   const form = props.form
-  const snapshot = useSyncExternalStore<ConfigFormSnapshot<Record<string, unknown>>>(
-    form === undefined ? fallbackSubscribe : form.state.subscribe.bind(form.state),
-    form === undefined ? fallbackGet : form.state.getSnapshot.bind(form.state),
-  )
+  // The manager supplies a plain snapshot object (no store methods): the page
+  // re-renders whenever the manager re-renders with a fresh snapshot.
+  const snapshot = form?.state
 
   if (props.view === 'summary') {
     const count = snapshot?.value === undefined ? undefined
