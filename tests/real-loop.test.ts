@@ -3,16 +3,17 @@ import { Context } from '@deepseek-ai/cordis'
 import TypertRegistry from '@deepseek-ai/dsh-typert-registry'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
 import SessionStore from '@deepseek-ai/dsh-session'
+import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
-import LlmRuntime, { CallId, LlmAdapter } from '@deepseek-ai/dsh-llm'
+import LlmRuntime, { ToolCallId, LlmAdapter } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import { AgentRunner } from '../src/agent-runner.ts'
 import type { ResolvedAccountConfig } from '../src/config.ts'
 import type { McpHost, RawMcpTool } from '../src/github/mcp-host.ts'
 import type { PullRequest } from '../src/github/model.ts'
-import { silentLogger } from '../src/logger.ts'
 
 const pr: PullRequest = {
   number: 42,
@@ -51,8 +52,8 @@ const rawTools: RawMcpTool[] = [
 
 const toolCallChunks = (index: number, id: string, name: string, argumentsText: string): StreamChunk[] => [
   { type: 'block-start', index, blockType: 'tool-call' },
-  { type: 'tool-call-delta', index, id: CallId(id), name, argumentsDelta: argumentsText },
-  { type: 'block-end', index, block: { type: 'tool-call', id: CallId(id), name, arguments: argumentsText } },
+  { type: 'tool-call-delta', index, id: ToolCallId(id), name, argumentsDelta: argumentsText },
+  { type: 'block-end', index, block: { type: 'tool-call', id: ToolCallId(id), name, arguments: argumentsText } },
 ]
 
 const textChunks = (index: number, value: string): StreamChunk[] => [
@@ -78,16 +79,24 @@ function streamOf(chunks: StreamChunk[]): AsyncIterable<StreamChunk> {
 /** Assemble the minimal real harness service spine for the agent loop. */
 async function composeSpine(): Promise<{ ctx: Context; dispose: () => Promise<void> }> {
   const ctx = new Context()
-  const fibers = [
-    ctx.plugin(TypertRegistry),
-    ctx.plugin(AgentRegistry),
-    ctx.plugin(SessionStore),
-    ctx.plugin(LlmRuntime),
-    ctx.plugin(SystemPrompt),
-    ctx.plugin(ToolRuntime),
-    ctx.plugin(AgentLoop, { agents: [] }),
-  ]
-  await fibers[fibers.length - 1]
+  const fibers: Array<ReturnType<Context['plugin']>> = []
+  // plugin() resolves at registration in 0.2.x, so await each fiber in
+  // activation order exactly like the framework's own loop tests; the
+  // executor mounts before the registry and the loop start last.
+  const mount = async (plugin: unknown, config?: unknown): Promise<void> => {
+    const fiber = ctx.plugin(plugin as never, config as never)
+    fibers.push(fiber)
+    await fiber
+  }
+  await mount(TypertRegistry)
+  await mount(SessionProjectionRegistry)
+  await mount(SessionStore)
+  await mount(LlmRuntime)
+  await mount(SystemPrompt)
+  await mount(ToolRuntime)
+  await mount(NativeToolExecutor)
+  await mount(AgentRegistry)
+  await mount(AgentLoop, { agents: [] })
   return {
     ctx,
     dispose: async () => {
@@ -118,6 +127,7 @@ class ScriptedAdapter extends LlmAdapter {
 describe('AgentRunner against the real harness agent loop', () => {
   it('drives a full review turn: complete system prompt, guarded tool, session log, submitted state', async () => {
     const { ctx, dispose } = await composeSpine()
+    ctx.on("agent/request-error", (data: { failure: unknown }) => { console.error("REQ-ERROR", JSON.stringify(data.failure)) })
     try {
       const seen: GenerateOptions[] = []
       const mcpCalls: Array<{ remote: string; args: Record<string, unknown> }> = []
@@ -151,7 +161,7 @@ describe('AgentRunner against the real harness agent loop', () => {
         sessions: ctx.sessions,
         agentDefaultModel: { currentSelection: () => ({ provider: 'deepseek', model: 'deepseek-chat' }) },
         tokenSource: { token: async () => 'tok' },
-        logger: silentLogger(),
+        logger: { debug: (_m: string) => {}, info: (_m: string) => {}, warn: (m: string) => { console.error("WARN", m) }, error: (m: string) => { console.error("ERROR", m) } },
         hostFactory: async () => ({
           listTools: async () => rawTools,
           call: async (remote, args) => {
@@ -164,11 +174,18 @@ describe('AgentRunner against the real harness agent loop', () => {
 
       const outcome = await runner.driveReview(pr, { text: 'Check security first.', source: 'owner/repo@main' }, new AbortController().signal)
 
-      // The complete review system prompt reached the model.
+
+      // The complete review system prompt reached the model as the leading
+      // system-role message (loop-built requests leave `system` undefined).
       expect(seen).toHaveLength(2)
-      expect(seen[0].system).toContain('Check security first.')
-      expect(seen[0].system).toContain('Trust boundary')
-      // The review user prompt was the turn's user message.
+      const systemText = seen[0].messages
+        .filter((message: { role: string; content: Array<{ type: string; text?: string }> }) => message.role === "system")
+        .flatMap((message: { content: Array<{ type: string; text?: string }> }) => message.content)
+        .filter((block: { type: string }) => block.type === "text")
+        .map((block: { text?: string }) => block.text ?? "")
+        .join("\n")
+      expect(systemText).toContain("Check security first.")
+      expect(systemText).toContain("Trust boundary")
       expect(seen[0].messages.some(message => message.role === 'user'
         && message.content.some(block => block.type === 'text' && block.text.includes('<pull_request>')))).toBe(true)
       // The model-visible tool set is the closed review world: only the four
@@ -190,7 +207,7 @@ describe('AgentRunner against the real harness agent loop', () => {
       expect(outcome.submitted).toBe(true)
       expect(outcome.text).toBe('Reviewed.')
       // The turn is in the real session log.
-      const types = ctx.sessions.list()[0].events.map(event => event.type)
+      const types = ctx.sessions.list()[0].snapshotEvents().map(event => event.type)
       expect(types).toContain('user/message')
       expect(types).toContain('assistant/message')
       expect(types).toContain('tool/call')
@@ -204,6 +221,7 @@ describe('AgentRunner against the real harness agent loop', () => {
 
   it('rejects a tool call targeting another PR through the real pipeline', async () => {
     const { ctx, dispose } = await composeSpine()
+    ctx.on("agent/request-error", (data: { failure: unknown }) => { console.error("REQ-ERROR", JSON.stringify(data.failure)) })
     try {
       ctx.llm.registerAdapter(['deepseek'], new ScriptedAdapter([
         () => [
@@ -220,7 +238,7 @@ describe('AgentRunner against the real harness agent loop', () => {
         sessions: ctx.sessions,
         agentDefaultModel: { currentSelection: () => ({ provider: 'deepseek', model: 'deepseek-chat' }) },
         tokenSource: { token: async () => 'tok' },
-        logger: silentLogger(),
+        logger: { debug: (_m: string) => {}, info: (_m: string) => {}, warn: (m: string) => { console.error("WARN", m) }, error: (m: string) => { console.error("ERROR", m) } },
         hostFactory: async () => ({
           listTools: async () => rawTools,
           call: async () => ({ content: 'ok', isError: false }),
@@ -232,7 +250,7 @@ describe('AgentRunner against the real harness agent loop', () => {
       expect(outcome.submitted).toBe(false)
       // The tool result the model saw carries the guard's rejection.
       const session = ctx.sessions.list()[0]
-      const toolResult = session.events.find(event => event.type === 'tool/result')
+      const toolResult = session.snapshotEvents().find(event => event.type === 'tool/result')
       expect(toolResult?.type).toBe('tool/result')
       expect(JSON.stringify(toolResult)).toContain('must target current PR')
 

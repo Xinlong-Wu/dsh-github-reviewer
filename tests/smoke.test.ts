@@ -4,28 +4,10 @@ import { access, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { Context } from '@deepseek-ai/cordis'
-import { SettingsProvider, type SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import * as plugin from '../src/index.ts'
 import type { Config } from '../src/config.ts'
 
 let dir = ''
-
-class MemorySettings extends SettingsProvider {
-  private readonly doc: Record<string, unknown> = {}
-
-  get writable(): boolean {
-    return true
-  }
-
-  protected load(): Promise<Record<string, unknown>> {
-    return Promise.resolve(structuredClone(this.doc))
-  }
-
-  protected persist(ns: SettingsNamespace, section: Record<string, unknown>): Promise<void> {
-    this.doc[ns] = structuredClone(section)
-    return Promise.resolve()
-  }
-}
 
 afterEach(async () => {
   vi.unstubAllGlobals()
@@ -236,38 +218,7 @@ describe('plugin wiring through a real Cordis context', () => {
     await vi.waitFor(() => {
       expect(fetchMock.mock.calls.some(call => String(call[0]).includes('/repos/owner/repo/pulls'))).toBe(true)
     })
-    expect(ctx.get('settings')).toBeUndefined()
     await fiber.dispose()
-  })
-
-  it('restarts from optional settings and falls back when its provider detaches', async () => {
-    const keyPath = await tempKeyPath()
-    const fetchMock = vi.fn(async (url: string | URL | Request) => {
-      if (String(url).includes('/access_tokens')) {
-        return new Response(JSON.stringify({ token: 'tok', expires_at: '2099-01-01T00:00:00Z' }), { status: 201 })
-      }
-      return new Response('[]', { status: 200 })
-    })
-    vi.stubGlobal('fetch', fetchMock)
-    const ctx = new Context()
-    provideCoreServices(ctx)
-    const settingsFiber = await ctx.plugin(MemorySettings)
-    const reviewerFiber = await ctx.plugin(plugin, validConfig(keyPath, { uiSettings: true }))
-
-    expect(ctx.settings.describe().some(entry => entry.ns === plugin.GITHUB_REVIEWER_SETTINGS_NAMESPACE)).toBe(true)
-    await ctx.settings.update(plugin.GITHUB_REVIEWER_SETTINGS_NAMESPACE, { repositories: ['other/repo'] })
-    await vi.waitFor(() => {
-      expect(fetchMock.mock.calls.some(call => String(call[0]).includes('/repos/other/repo/pulls'))).toBe(true)
-    })
-
-    const oldCalls = fetchMock.mock.calls.filter(call => String(call[0]).includes('/repos/owner/repo/pulls')).length
-    await settingsFiber.dispose()
-    await vi.waitFor(() => {
-      const next = fetchMock.mock.calls.filter(call => String(call[0]).includes('/repos/owner/repo/pulls')).length
-      expect(next).toBeGreaterThan(oldCalls)
-    })
-
-    await reviewerFiber.dispose()
   })
 
   it('registers the review workspace when workspaceRegistry is mounted', async () => {

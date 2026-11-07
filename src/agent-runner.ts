@@ -11,8 +11,8 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { AgentHandle, AgentRegistry, ModelSelection } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import type { SessionEvent, SessionStore } from '@deepseek-ai/dsh-session'
-import { SessionId } from '@deepseek-ai/dsh-session'
+import type { Session, SessionEvent, SessionStore } from '@deepseek-ai/dsh-session'
+import { SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session'
 import type { SessionPersistence } from '@deepseek-ai/dsh-session-persistence'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-tools'
@@ -51,8 +51,8 @@ export interface AgentRunnerDeps {
    * automatic generation never overrides it).
    */
   sessionTitle?: {
-    get(session: { id: string; events: readonly unknown[] }): { title?: string } | undefined
-    rename(session: { id: string; events: readonly unknown[] }, title: string): unknown
+    get(session: Session): { title?: string } | undefined
+    rename(session: Session, title: string): unknown
   }
   /** Durable session storage; absent in compositions without a persistence provider. */
   sessionPersistence?: SessionPersistence
@@ -183,7 +183,7 @@ export class AgentRunner {
     deadline.unref()
     let host: McpHost | undefined
     const state = new ReviewGuardState()
-    let firstSeq = 0
+    let firstSeq = SessionLogOffset(0)
     try {
       const handle = await this.ensureAgent(pr, turnSignal)
       agent = handle.agent
@@ -207,7 +207,7 @@ export class AgentRunner {
     }
     if (agent === undefined) throw new Error('unreachable: turn ended without an agent')
     await this.deps.sessions.flush(agent.session)
-    const text = summarizeInterval(agent.session.events, firstSeq)
+    const text = summarizeInterval(agent.session.snapshotEvents(firstSeq), firstSeq)
     return { submitted: state.submittedComment, text }
   }
 
@@ -216,7 +216,7 @@ export class AgentRunner {
    * through the session-title service, so automatic generation never replaces
    * it; already-titled sessions (e.g. resumed from persistence) are skipped.
    */
-  private renameSession(session: { id: string; events: readonly unknown[] }, pr: PullRequest): void {
+  private renameSession(session: Session, pr: PullRequest): void {
     const service = this.deps.sessionTitle
     if (service === undefined) return
     const title = `Review ${fullName(pr.base.repo)} PR ${pr.number}`
@@ -272,7 +272,7 @@ export class AgentRunner {
     let handle: AgentHandle
     const persistence = this.deps.sessionPersistence
     if (persistence !== undefined) {
-      const snapshots = await persistence.listSnapshots(signal)
+      const snapshots = await persistence.list({ signal })
       const exists = snapshots.some(snapshot => snapshot.header.id === sessionId)
       handle = exists
         ? await this.deps.agents.resume({ resumeSessionId: sessionId, agentOptions, setup, signal })

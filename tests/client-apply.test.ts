@@ -5,114 +5,105 @@ import { describe, expect, it, vi } from 'vitest'
 vi.mock('@deepseek-ai/dsh-client-ui-primitives', async () => {
   const runtime = await import('react')
   const Icon = () => runtime.createElement('svg')
-  return { IconChevronDownOutline14: Icon, IconPlusOutline16: Icon, IconTrashOutline16: Icon }
+  return { IconRefreshOutlineMedium: Icon }
 })
 
-vi.mock('@deepseek-ai/dsh-client-runtime/client', () => ({
-  createSnapshotStore<T>(initial: T) {
-    let snapshot = structuredClone(initial)
-    const listeners = new Set<() => void>()
-    return {
-      getSnapshot: () => snapshot,
-      subscribe(listener: () => void) {
-        listeners.add(listener)
-        return () => { listeners.delete(listener) }
-      },
-      update(recipe: (draft: T) => void) {
-        const next = structuredClone(snapshot)
-        recipe(next)
-        snapshot = next
-        for (const listener of listeners) listener()
-      },
-    }
-  },
-}))
+vi.mock('dsh-github-reviewer/remote', () => ({ default: { __remoteFace: true } }))
 
-import { apply } from '../src/client/index.ts'
-import type { ReviewerSettings } from '../src/settings-contract.ts'
+import { apply, inject } from '../src/client/index.ts'
 
-const value: ReviewerSettings = {
-  pollIntervalMs: 120_000,
-  repositories: [],
-  workspaceDir: '/tmp/reviewer',
-  workspaceTitle: 'GithubReviewer',
-  review: {
-    maxToolCalls: 30,
-    toolTimeoutMs: 30_000,
-    toolResultLimit: 60_000,
-    timeoutMs: 900_000,
-    defaultInstructions: '',
-    commandAuthorAssociations: ['OWNER'],
-    models: [],
-  },
+const configForm = {
+  getSnapshot: () => ({
+    status: 'ready' as const,
+    value: { repositories: ['owner/repo'] },
+    base: undefined,
+    user: undefined,
+    revision: 1,
+    writable: true,
+  }),
+  subscribe: vi.fn(() => vi.fn()),
+  mutate: vi.fn(async () => true),
+}
+
+function clientContext() {
+  const mountDispose = vi.fn()
+  const effects: Array<() => void | Promise<void>> = []
+  const register = vi.fn(() => vi.fn())
+  const localeRegister = vi.fn(() => vi.fn())
+  const repositories = vi.fn(async () => ({ ok: true as const, value: { repositories: [] } }))
+  const lateInjects: string[][] = []
+  const ctx = {
+    effect: (install: () => void | (() => void | Promise<void>)) => {
+      const dispose = install()
+      if (typeof dispose === 'function') effects.push(dispose)
+    },
+    // The mounted namespace exists by the time apply registers a late
+    // companion, so the mock fires the callback immediately.
+    inject: (namespaces: string[], callback: (bound: unknown) => void) => {
+      lateInjects.push(namespaces)
+      callback(ctx)
+      return vi.fn()
+    },
+    configForms: { get: vi.fn(() => configForm) },
+    remote: {
+      $mount: vi.fn(async () => mountDispose),
+      githubReviewerCatalog: { repositories },
+    },
+    locale: { register: localeRegister, bind: () => (key: string) => key },
+    slots: {
+      inject: (_name: string, install: () => unknown) => { install(); return vi.fn() },
+      register,
+    },
+  }
+  return { ctx, mountDispose, effects, register, localeRegister, repositories, lateInjects, configFormsGet: ctx.configForms.get }
 }
 
 describe('github-reviewer Client apply', () => {
-  it('loads and refreshes the model catalog and disposes every invalidation', async () => {
-    const models = vi.fn(async () => ({
-      id: 1,
-      result: { ok: true as const, value: { groups: [], failures: [] } },
-    }))
-    const handlers = new Map<string, (...args: unknown[]) => void>()
-    const mountDispose = vi.fn()
-    const remoteDisposers = [vi.fn(), vi.fn()]
-    let remoteIndex = 0
-    const connectionDispose = vi.fn()
-    const effects: Array<() => void | Promise<void>> = []
-    const register = vi.fn(() => vi.fn())
-    const ctx = {
-      settingsScope: {
-        bind: () => ({
-          getSnapshot: () => ({
-            status: 'ready', value, base: value, user: {}, revision: 1, writable: true, mode: 'host',
-          }),
-          subscribe: () => () => {},
-        }),
-      },
-      get: (name: string) => name === 'connection'
-        ? { api: { settings: { mutate: vi.fn() }, llm: { models } } }
-        : undefined,
-      effect: (install: () => void | (() => void | Promise<void>)) => {
-        const dispose = install()
-        if (typeof dispose === 'function') effects.push(dispose)
-      },
-      remote: {
-        $mount: vi.fn(async () => mountDispose),
-        githubReviewerCatalog: {
-          repositories: vi.fn(async () => ({ ok: true as const, value: { repositories: [] } })),
-        },
-        $on: (event: string, handler: (...args: unknown[]) => void) => {
-          handlers.set(event, handler)
-          return remoteDisposers[remoteIndex++]
-        },
-      },
-      on: (event: string, handler: (...args: unknown[]) => void) => {
-        handlers.set(event, handler)
-        return connectionDispose
-      },
-      locale: { register: vi.fn(() => vi.fn()) },
-      slots: {
-        inject: (_name: string, install: () => unknown) => { install(); return vi.fn() },
-        register,
-      },
-    }
+  it('mounts the Remote face, registers locale/styles, and contributes one Plugins-page tab', async () => {
+    // The dotted namespace is a late companion (this apply mounts it), never
+    // a static inject requirement: that would park the plugin PENDING forever.
+    expect(inject).toEqual(['slots', 'locale', 'remote', 'configForms'])
+    const { ctx, mountDispose, effects, register, localeRegister, lateInjects, configFormsGet } = clientContext()
 
     await apply(ctx as never)
-    await vi.waitFor(() => expect(models).toHaveBeenCalledTimes(1))
 
-    handlers.get('llm/adapters-updated')?.()
-    await vi.waitFor(() => expect(models).toHaveBeenCalledTimes(2))
-    handlers.get('settings/document-updated')?.('llm-pi-ai', 1)
-    await vi.waitFor(() => expect(models).toHaveBeenCalledTimes(3))
-    handlers.get('connection/reset')?.()
-    await vi.waitFor(() => expect(models).toHaveBeenCalledTimes(4))
-    expect(register).toHaveBeenCalledTimes(1)
+    expect(lateInjects).toEqual([['remote.githubReviewerCatalog']])
+    expect(ctx.remote.$mount).toHaveBeenCalledTimes(1)
+    expect(localeRegister).toHaveBeenCalledTimes(1)
+    const [namespace, dictionaries] = localeRegister.mock.calls[0] as [string, Record<string, unknown>]
+    expect(namespace).toBe('settings.githubReviewer')
+    expect(Object.keys(dictionaries).sort()).toEqual(['en', 'zh'])
+    expect(document.head.querySelector('style[data-plugin="dsh-github-reviewer"]')).not.toBeNull()
+    expect(configFormsGet).toHaveBeenCalledWith('github-reviewer')
+    expect(register).toHaveBeenCalledTimes(2)
+
+    const [registration] = register.mock.calls[0] as [{
+      name: string
+      id: string
+      label: () => string
+      inject: () => { loadCatalog: unknown; configForm: unknown }
+    }][]
+    expect(registration.name).toBe('settings.plugins.tab')
+    expect(registration.id).toBe('github-reviewer')
+    expect(typeof registration.label()).toBe('string')
+    const injected = registration.inject()
+    expect(typeof injected.loadCatalog).toBe('function')
+    expect(injected.configForm).toBe(configForm)
 
     for (const dispose of effects.reverse()) await dispose()
     expect(mountDispose).toHaveBeenCalledTimes(1)
-    expect(remoteDisposers[0]).toHaveBeenCalledTimes(1)
-    expect(remoteDisposers[1]).toHaveBeenCalledTimes(1)
-    expect(connectionDispose).toHaveBeenCalledTimes(1)
     expect(document.head.querySelector('style[data-plugin="dsh-github-reviewer"]')).toBeNull()
+  })
+
+  it('wires the tab loadCatalog call through the mounted Host remote', async () => {
+    const { ctx, repositories } = clientContext()
+    await apply(ctx as never)
+
+    const [registration] = (ctx.slots.register as ReturnType<typeof vi.fn>).mock.calls[0] as [{
+      inject: () => { loadCatalog: (signal: AbortSignal) => Promise<unknown> }
+    }][]
+    const catalog = await registration.inject().loadCatalog(new AbortController().signal)
+    expect(repositories).toHaveBeenCalledTimes(1)
+    expect(catalog).toEqual({ repositories: [] })
   })
 })

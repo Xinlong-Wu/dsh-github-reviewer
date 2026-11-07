@@ -26,11 +26,13 @@ A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) plugin tha
 
 ## Quick start
 
+Requires DeepSeek Harness **>= 0.2.2-alpha.3** (declared through `engines.dsh`) and Node >= 24.
+
 ```sh
 dsh plugin --profile web add dsh-github-reviewer
 ```
 
-Installation adds the bundle to the web profile and registers one enabled `github-reviewer` instance; `uiSettings` also defaults to `true`. Before the next restart, complete authentication and MCP configuration by `id` in the profile's `cordis.patch.yml`, and add repositories as needed (no `disabled: false` or `uiSettings: true` is required; see [Deployment and Mounting](docs/deploy.en.md)). The **GitHub Reviewer** settings card starts collapsed and edits repositories as owner (organization or user)/repository rows. Focusing a field loads repositories accessible to the configured GitHub credential and offers searchable suggestions without disabling free text; catalog failures and manually entered values outside the catalog never block editing or saving. Add/remove actions remain icon-only, and review candidates come from DSH's configured provider/model catalog. Candidates are prioritized from top to bottom and can be reordered by dragging. Repositories may be empty; the reviewer stays running but polls nothing.
+Installation adds the bundle to the web profile and registers one enabled `github-reviewer` instance. Before the next restart, complete authentication and MCP configuration by `id` in the profile's `cordis.patch.yml`, and add repositories as needed (see [Deployment and Mounting](docs/deploy.en.md)). Configuration edits go through the plugin's **config form** on the installed-plugin row (the 0.2.x settings model: forms write the profile patch and reload the plugin). The **Plugins → GitHub Reviewer** settings tab is a read-only view: the monitored repository list (from the accessible catalog of the configured credential) with a refresh control. Repositories may be empty; the reviewer stays running but polls nothing.
 
 ## Documentation
 

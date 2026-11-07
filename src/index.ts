@@ -6,24 +6,21 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
+// Type-only: the `loader/volatile-update` Events merge (volatile config edits).
+import type {} from '@deepseek-ai/cordis-plugin-loader'
 import type {} from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-agent-default-model'
 import type {} from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-session-persistence'
 import type {} from '@deepseek-ai/dsh-storage-domain'
 import type {} from '@deepseek-ai/dsh-workspace'
-import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
 import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import {
-  accountWithReviewerSettings,
   Config,
   normalizeAccountConfig,
-  ReviewerSettingsSchema,
-  reviewerSettingsOf,
   validateAccountRuntime,
-  validateReviewerSettings,
 } from './config.ts'
-import type { Config as PluginConfig, ReviewerSettings } from './config.ts'
+import type { Config as PluginConfig } from './config.ts'
 import { StaticTokenSource } from './github/auth.ts'
 import { cordisLogger } from './poller.ts'
 import type { RepositoryCatalog } from './repository-catalog-contract.ts'
@@ -83,9 +80,6 @@ export const name = 'github-reviewer'
 /** Required core services; settings and workspace remain optional companions. */
 export const inject = ['agents', 'sessions', 'agentDefaultModel', 'storageDomain']
 
-/** Fixed namespace owned by the one instance opting into the Web settings card. */
-export const GITHUB_REVIEWER_SETTINGS_NAMESPACE = settingsNamespace('github-reviewer')
-
 /** Account-name leases prevent concurrent instances from sharing cursor/session identities. */
 const activeAccounts = new Map<string, symbol>()
 
@@ -121,7 +115,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
     const persistence = ctx.get('sessionPersistence')
     if (persistence === undefined) return { headers: [...headers.values()], complete: false }
     try {
-      for (const header of await persistence.list(signal)) headers.set(header.id, header)
+      for (const snapshot of await persistence.list({ signal })) headers.set(snapshot.header.id, snapshot.header)
       return { headers: [...headers.values()], complete: true }
     } catch (error) {
       if (signal.aborted) throw error
@@ -149,26 +143,22 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
 
     await controller.start(baseAccount)
 
+    // Volatile config edits (the Plugins-page config form writes the profile
+    // patch and cordis updates the fields in place) re-request the runtime
+    // without a plugin reload — the same contract the old settings section
+    // implemented. Auth, URLs, MCP, and the account name are not volatile:
+    // changing those edits the patch for the next full restart.
+    ctx.on('loader/volatile-update', () => {
+      try {
+        controller.request(normalizeAccountConfig(config))
+      } catch (error) {
+        logger.warn(`github reviewer config update failed: ${String(error)}`)
+      }
+    })
+
+    // The Web card is a read-only repository catalog over the typert Remote.
     if (baseAccount.uiSettings) {
       await ctx.plugin(RepositoryCatalogRemote, { controller, logger })
-      let source: () => ReviewerSettings = () => reviewerSettingsOf(baseAccount)
-      installSettingsSection(
-        ctx,
-        GITHUB_REVIEWER_SETTINGS_NAMESPACE,
-        ReviewerSettingsSchema,
-        reviewerSettingsOf(baseAccount),
-        {
-          validate: value => { validateReviewerSettings(baseAccount, value) },
-          setSource: current => { source = current },
-          onChange: () => {
-            try {
-              controller.request(accountWithReviewerSettings(baseAccount, source()))
-            } catch (error) {
-              logger.warn(`github reviewer settings resolution failed: ${String(error)}`)
-            }
-          },
-        },
-      )
     }
 
     ctx.effect(() => async () => {
