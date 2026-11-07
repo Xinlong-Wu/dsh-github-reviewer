@@ -31,6 +31,16 @@ const styles = `
 .ghr-repos{list-style:none;margin:0;padding:0;display:grid;gap:6px}
 .ghr-repo{display:flex;align-items:center;gap:8px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:8px 12px;background:var(--dsw-alias-bg-layer-3)}
 .ghr-repo-name{font-size:13px;color:var(--dsw-alias-label-primary);overflow-wrap:anywhere}
+.ghr-config{display:grid;gap:14px;border-top:1px solid var(--dsw-alias-border-l2);padding-top:14px}
+.ghr-hint{margin:0;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:1.55}
+.ghr-field{display:grid;gap:6px}
+.ghr-field>span{color:var(--dsw-alias-label-secondary);font-size:12px}
+.ghr-field input,.ghr-field textarea{width:100%;box-sizing:border-box;border:1px solid var(--dsw-alias-border-l3);border-radius:8px;padding:8px 10px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);font:inherit}
+.ghr-field textarea{resize:vertical}
+.ghr-field input:focus-visible,.ghr-field textarea:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px}
+.ghr-field input:disabled,.ghr-field textarea:disabled{opacity:.5;cursor:not-allowed}
+.ghr-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}
+.ghr-actions{display:flex;align-items:center;justify-content:flex-end;gap:12px}
 .ghr-badge{font-size:11px;padding:2px 6px;border-radius:999px;background:var(--dsw-alias-button-info-fill);color:var(--dsw-alias-label-primary-foreground)}
 `
 
