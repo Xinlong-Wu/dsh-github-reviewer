@@ -1,6 +1,6 @@
 /** Read-only repository catalog plus the entry's editable config form, contributed to the Plugins settings page. */
 
-import { useEffect, useState, useSyncExternalStore, type ReactNode } from 'react'
+import { useEffect, useState, useSyncExternalStore } from 'react'
 import { IconRefreshOutlineMedium } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ConfigForm, ConfigFormSnapshot } from '@deepseek-ai/dsh-client-ui-settings/client'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'

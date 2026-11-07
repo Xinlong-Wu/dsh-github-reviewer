@@ -5,7 +5,6 @@ import { useState } from 'react'
 import type {} from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import { GithubReviewerConfigFormSection } from './ConfigFormSection.tsx'
-import type { GithubReviewerLocaleKey } from './locales.ts'
 
 /** No injected face: the manager passes `view` and `form` as render args. */
 export interface GithubReviewerRowConfigInjected {}
