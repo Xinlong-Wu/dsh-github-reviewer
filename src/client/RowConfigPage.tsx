@@ -33,18 +33,6 @@ export type GithubReviewerRowConfigProps =
     readonly form?: RowConfigPageForm | undefined
   }
 
-type Snapshot = NonNullable<ConfigFormSnapshot<Record<string, unknown>>>
-
-function text(value: Record<string, unknown> | undefined, key: string): string {
-  const raw = value?.[key]
-  return typeof raw === 'string' ? raw : ''
-}
-
-function numberOf(value: Record<string, unknown> | undefined, key: string): number {
-  const raw = value?.[key]
-  return typeof raw === 'number' ? raw : Number.NaN
-}
-
 /** Snapshot shown when the manager page renders the slot without a form. */
 const EMPTY_SNAPSHOT: ConfigFormSnapshot<Record<string, unknown>> = {
   status: 'unavailable',
