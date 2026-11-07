@@ -1,6 +1,6 @@
 /** Editable volatile config fields shared by the tab and the row config page. */
 
-import { useEffect, useState, type ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import type { ConfigFormSnapshot } from '@deepseek-ai/dsh-client-ui-settings/client'
 import type { SettingsPathOpView } from '@deepseek-ai/dsh-api-remotes/client'
 import type { GithubReviewerLocaleKey } from './locales.ts'

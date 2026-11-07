@@ -1,6 +1,5 @@
 /** Editable configuration page for the github-reviewer bundle row. */
 
-import { useState } from 'react'
 // Type-only: pulls the 'plugins.row.config' SlotMap merge (view + form props).
 import type {} from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
