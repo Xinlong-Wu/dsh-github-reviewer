@@ -28,7 +28,7 @@ const styles = `
 `
 
 /** Required browser services; an incomplete Web composition leaves only this Client companion pending. */
-export const inject = ['slots', 'locale', 'remote', 'remote.githubReviewerCatalog']
+export const inject = ['slots', 'locale', 'remote']
 
 /** Register the Remote contribution, locale, styles, and the Plugins-page catalog tab. */
 export async function apply(ctx: ClientContext): Promise<void> {
@@ -45,19 +45,27 @@ export async function apply(ctx: ClientContext): Promise<void> {
   }, 'github-reviewer styles')
 
   const t = ctx.locale.bind(LOCALE_NAMESPACE)
-  const loadCatalog: Parameters<typeof GithubReviewerCatalogTab>[0]['loadCatalog'] = async (signal) => {
-    const result = await ctx.remote.githubReviewerCatalog.repositories(signal)
-    if (!result.ok) throw new Error(`${result.error.code}: ${result.error.message}`)
-    return result.value
-  }
-  const injected = { loadCatalog }
 
-  ctx.slots.inject('settings.plugins.tab', () => ctx.slots.register({
-    name: 'settings.plugins.tab',
-    id: 'github-reviewer',
-    order: 30,
-    label: () => t('title'),
-    locale: LOCALE_NAMESPACE,
-    inject: () => injected,
-  }, GithubReviewerCatalogTab))
+  // The catalog tab reads the mounted githubReviewerCatalog namespace. The
+  // dotted path must NOT go into the static inject list: this same apply()
+  // mounts the namespace, so a static requirement would wait on a service
+  // that cannot exist yet (the plugin parks PENDING forever). The late
+  // companion binding below is the cordis pattern for self-mounted services.
+  ctx.inject(['remote.githubReviewerCatalog'], (remoteCtx) => {
+    const loadCatalog: Parameters<typeof GithubReviewerCatalogTab>[0]['loadCatalog'] = async (signal) => {
+      const result = await remoteCtx.remote.githubReviewerCatalog.repositories(signal)
+      if (!result.ok) throw new Error(`${result.error.code}: ${result.error.message}`)
+      return result.value
+    }
+    const injected = { loadCatalog }
+
+    ctx.slots.inject('settings.plugins.tab', () => ctx.slots.register({
+      name: 'settings.plugins.tab',
+      id: 'github-reviewer',
+      order: 30,
+      label: () => t('title'),
+      locale: LOCALE_NAMESPACE,
+      inject: () => injected,
+    }, GithubReviewerCatalogTab))
+  })
 }

@@ -18,10 +18,18 @@ function clientContext() {
   const register = vi.fn(() => vi.fn())
   const localeRegister = vi.fn(() => vi.fn())
   const repositories = vi.fn(async () => ({ ok: true as const, value: { repositories: [] } }))
+  const lateInjects: string[][] = []
   const ctx = {
     effect: (install: () => void | (() => void | Promise<void>)) => {
       const dispose = install()
       if (typeof dispose === 'function') effects.push(dispose)
+    },
+    // The mounted namespace exists by the time apply registers a late
+    // companion, so the mock fires the callback immediately.
+    inject: (namespaces: string[], callback: (bound: unknown) => void) => {
+      lateInjects.push(namespaces)
+      callback(ctx)
+      return vi.fn()
     },
     remote: {
       $mount: vi.fn(async () => mountDispose),
@@ -33,18 +41,19 @@ function clientContext() {
       register,
     },
   }
-  return { ctx, mountDispose, effects, register, localeRegister, repositories }
+  return { ctx, mountDispose, effects, register, localeRegister, repositories, lateInjects }
 }
 
 describe('github-reviewer Client apply', () => {
   it('mounts the Remote face, registers locale/styles, and contributes one Plugins-page tab', async () => {
-    // The catalog tab reads ctx.remote.githubReviewerCatalog: cordis requires
-    // the dotted namespace in the plugin's own inject list.
-    expect(inject).toContain('remote.githubReviewerCatalog')
-    const { ctx, mountDispose, effects, register, localeRegister } = clientContext()
+    // The dotted namespace is a late companion (this apply mounts it), never
+    // a static inject requirement: that would park the plugin PENDING forever.
+    expect(inject).toEqual(['slots', 'locale', 'remote'])
+    const { ctx, mountDispose, effects, register, localeRegister, lateInjects } = clientContext()
 
     await apply(ctx as never)
 
+    expect(lateInjects).toEqual([['remote.githubReviewerCatalog']])
     expect(ctx.remote.$mount).toHaveBeenCalledTimes(1)
     expect(localeRegister).toHaveBeenCalledTimes(1)
     const [namespace, dictionaries] = localeRegister.mock.calls[0] as [string, Record<string, unknown>]
